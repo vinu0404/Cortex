@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # --- CORS ---
     CORS_ORIGINS: list[str] = []
 
+    # --- Tavily ---
+    TAVILY_API_KEY: str = ""
+
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
