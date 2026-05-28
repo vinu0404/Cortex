@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span style="font-weight:600; font-size:15px;">Dashboard</span>
+  </div>
+  <div style="display:flex; gap:8px;">
+    <button id="user-tab" onclick="switchView('user')" class="btn btn-primary btn-sm">My Stats</button>
+    <button id="admin-tab" onclick="switchView('admin')" class="btn btn-secondary btn-sm hidden">Admin</button>
+  </div>
+</nav>
+
+<main style="max-width:1100px; margin:0 auto; padding:32px 24px;">
+
+  <!-- User stats -->
+  <div id="user-view">
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:16px; margin-bottom:32px;" id="stat-cards"></div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+      <div>
+        <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">My Workspaces</h3>
+        <div id="my-workspaces"></div>
+      </div>
+      <div>
+        <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">Personas</h3>
+        <div id="personas-section">
+          <div style="display:flex; gap:8px; margin-bottom:12px;">
+            <button onclick="showModal('modal-persona')" class="btn btn-secondary btn-sm">+ Add Persona</button>
+          </div>
+          <div id="personas-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin view -->
+  <div id="admin-view" class="hidden">
+    <h2 style="font-size:18px; font-weight:700; margin-bottom:24px;">Admin Overview</h2>
+    <div id="admin-stats" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:16px; margin-bottom:32px;"></div>
+    <div>
+      <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">All Users</h3>
+      <div id="admin-users-table"></div>
+    </div>
+  </div>
+</main>
+
+<!-- Persona Modal -->
+<div id="modal-persona" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">New Persona</span>
+      <button class="modal-close" onclick="hideModal('modal-persona')">×</button>
+    </div>
+    <form onsubmit="createPersona(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Name</label>
+        <input id="persona-name" class="input" placeholder="Formal Assistant" required>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <input id="persona-desc" class="input" placeholder="Formal, structured responses">
+      </div>
+      <div class="form-group">
+        <label>System Prompt</label>
+        <textarea id="persona-prompt" class="textarea" placeholder="You are a formal assistant…" required style="min-height:100px;"></textarea>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-persona')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="save-persona-btn" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+  let isAdmin = false;
+
+  async function init() {
+    const user = await apiGet('auth/me');
+    isAdmin = user.role === 'admin';
+    if (isAdmin) document.getElementById('admin-tab').classList.remove('hidden');
+    await loadUserView();
+  }
+
+  async function loadUserView() {
+    const [workspaces, personas] = await Promise.all([
+      apiGet('workspaces?limit=50'),
+      apiGet('personas'),
+    ]);
+
+    // Stat cards
+    const cards = [
+      { label: 'Workspaces', value: workspaces?.items?.length || 0 },
+      { label: 'Conversations', value: '—' },
+      { label: 'Personas', value: (personas || []).length },
+    ];
+    document.getElementById('stat-cards').innerHTML = cards.map(c => `
+      <div class="card" style="text-align:center; padding:20px;">
+        <div style="font-size:28px; font-weight:700; letter-spacing:-1px;">${c.value}</div>
+        <div style="color:var(--text-muted); font-size:13px; margin-top:4px;">${c.label}</div>
+      </div>`).join('');
+
+    // Workspaces list
+    document.getElementById('my-workspaces').innerHTML = (workspaces?.items || []).map(ws => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:500; font-size:14px;">${esc(ws.name)}</div>
+          <div style="color:var(--text-muted); font-size:12px;">${new Date(ws.created_at).toLocaleDateString()}</div>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <a href="/chat.html?workspace_id=${ws.id}" class="btn btn-secondary btn-sm">Chat</a>
+          <a href="/workspace.html?id=${ws.id}" class="btn btn-secondary btn-sm">Build</a>
+        </div>
+      </div>`).join('') || '<div style="color:var(--text-muted); font-size:13px;">No workspaces yet.</div>';
+
+    // Personas
+    renderPersonasList(personas || []);
+  }
+
+  function renderPersonasList(list) {
+    document.getElementById('personas-list').innerHTML = list.map(p => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:500; font-size:14px;">${esc(p.name)}</div>
+          ${p.description ? `<div style="color:var(--text-muted); font-size:12px;">${esc(p.description)}</div>` : ''}
+        </div>
+        <button onclick="deletePersona('${p.id}')" class="btn btn-danger btn-sm">Delete</button>
+      </div>`).join('') || '<div style="color:var(--text-muted); font-size:13px;">No personas yet.</div>';
+  }
+
+  async function createPersona(e) {
+    e.preventDefault();
+    const btn = document.getElementById('save-persona-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await apiPost('personas', {
+        name: document.getElementById('persona-name').value,
+        description: document.getElementById('persona-desc').value || null,
+        system_prompt: document.getElementById('persona-prompt').value,
+      });
+      hideModal('modal-persona');
+      await init();
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Save'; }
+  }
+
+  async function deletePersona(id) {
+    if (!confirm('Delete persona?')) return;
+    try { await apiDelete(`personas/${id}`); await init(); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function loadAdminView() {
+    if (!isAdmin) return;
+    const users = await apiGet('admin/users?limit=50');
+    document.getElementById('admin-users-table').innerHTML = `
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead><tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left; padding:8px 0;">Email</th>
+          <th style="text-align:left; padding:8px 0;">Role</th>
+          <th style="text-align:left; padding:8px 0;">Active</th>
+          <th style="text-align:left; padding:8px 0;">Joined</th>
+        </tr></thead>
+        <tbody>${(users?.items || []).map(u => `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px 0;">${esc(u.email)}</td>
+            <td style="padding:8px 0;"><span class="badge">${esc(u.role)}</span></td>
+            <td style="padding:8px 0;">${u.is_active ? '✓' : '✗'}</td>
+            <td style="padding:8px 0;">${new Date(u.created_at).toLocaleDateString()}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function switchView(view) {
+    const userView = document.getElementById('user-view');
+    const adminView = document.getElementById('admin-view');
+    document.getElementById('user-tab').className = view === 'user' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+    document.getElementById('admin-tab').className = view === 'admin' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm hidden';
+    if (view === 'user') {
+      userView.classList.remove('hidden');
+      adminView.classList.add('hidden');
+      if (isAdmin) document.getElementById('admin-tab').classList.remove('hidden');
+    } else {
+      userView.classList.add('hidden');
+      adminView.classList.remove('hidden');
+      loadAdminView();
+    }
+  }
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  init();
+</script>
+</body>
+</html>

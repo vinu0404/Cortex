@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Agent Builder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .agent-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); }
+    .agent-card.system { background:var(--surface); border-style:dashed; }
+    .agents-rail { display:flex; flex-direction:column; gap:12px; }
+    .sidebar { width:280px; flex-shrink:0; border-left:1px solid var(--border); padding:20px; overflow-y:auto; }
+  </style>
+</head>
+<body>
+
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span id="ws-name" style="font-weight:600; font-size:15px;"></span>
+  </div>
+  <button onclick="goChat()" class="btn btn-primary btn-sm">Open Chat →</button>
+</nav>
+
+<div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
+
+  <!-- Agent Canvas -->
+  <div style="flex:1; overflow-y:auto; padding:24px;">
+    <h2 style="font-size:16px; font-weight:600; margin-bottom:4px;">Agent Pipeline</h2>
+    <p style="color:var(--text-muted); font-size:13px; margin-bottom:20px;">Master plans, custom agents execute, Composer synthesizes.</p>
+
+    <div class="agents-rail">
+      <!-- Master (pinned) -->
+      <div class="agent-card system">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+          <span style="font-size:18px;">🧠</span>
+          <span style="font-weight:600;">Master Agent</span>
+          <span class="badge">System</span>
+        </div>
+        <p style="color:var(--text-muted); font-size:13px;">Plans execution order, assigns tasks to agents, manages dependencies.</p>
+        <div style="margin-top:12px;">
+          <label style="font-size:12px; font-weight:500; color:var(--text-muted);">Model & API Key</label>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <select id="master-model" class="select" style="flex:1;" onchange="updateMasterAgent()"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Custom agents -->
+      <div id="custom-agents"></div>
+
+      <!-- Add agent button -->
+      <button onclick="showModal('modal-agent')" class="btn btn-secondary" style="align-self:flex-start;">+ Add Agent</button>
+
+      <!-- Composer (pinned) -->
+      <div class="agent-card system">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+          <span style="font-size:18px;">✍️</span>
+          <span style="font-weight:600;">Composer Agent</span>
+          <span class="badge">System</span>
+        </div>
+        <p style="color:var(--text-muted); font-size:13px;">Synthesises all agent outputs into a final response. Generates artifacts.</p>
+        <div style="margin-top:12px;">
+          <label style="font-size:12px; font-weight:500; color:var(--text-muted);">Model & API Key</label>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <select id="composer-model" class="select" style="flex:1;" onchange="updateComposerAgent()"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar: API Keys + Connectors -->
+  <div class="sidebar">
+    <div style="margin-bottom:24px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <span style="font-weight:600; font-size:14px;">API Keys</span>
+        <button onclick="showModal('modal-add-key')" class="btn btn-secondary btn-sm">+ Add</button>
+      </div>
+      <div id="api-keys-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+    </div>
+
+    <div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <span style="font-weight:600; font-size:14px;">Connectors</span>
+      </div>
+      <div id="connectors-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Agent Modal -->
+<div id="modal-agent" class="modal-overlay hidden">
+  <div class="modal" style="width:min(640px,95vw);">
+    <div class="modal-header">
+      <span class="modal-title" id="agent-modal-title">New Agent</span>
+      <button class="modal-close" onclick="closeAgentModal()">×</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Agent Name</label>
+        <input id="agent-name" class="input" placeholder="research_agent" required>
+      </div>
+      <div class="form-group">
+        <label>Describe what this agent should do</label>
+        <div style="display:flex; gap:8px;">
+          <textarea id="agent-user-desc" class="textarea" placeholder="Reads emails and summarises them…" style="flex:1;"></textarea>
+          <button onclick="generatePrompt()" id="gen-btn" class="btn btn-secondary" style="align-self:flex-start; white-space:nowrap;">Generate Prompt</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>System Prompt</label>
+        <textarea id="agent-prompt" class="textarea" style="min-height:120px;" placeholder="You are an agent that…"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Model</label>
+        <select id="agent-model" class="select"></select>
+      </div>
+      <div class="form-group">
+        <label>Tools</label>
+        <div id="tool-picker" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); min-height:44px;"></div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px;">
+      <button onclick="closeAgentModal()" class="btn btn-secondary">Cancel</button>
+      <button onclick="saveAgent()" id="save-agent-btn" class="btn btn-primary">Save Agent</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add API Key Modal -->
+<div id="modal-add-key" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add API Key</span>
+      <button class="modal-close" onclick="hideModal('modal-add-key')">×</button>
+    </div>
+    <form onsubmit="addApiKey(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Key Name</label>
+        <input id="key-name" class="input" placeholder="My OpenAI Key" required>
+      </div>
+      <div class="form-group">
+        <label>API Key</label>
+        <input id="key-value" class="input" type="password" placeholder="sk-..." required>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-add-key')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="add-key-btn" class="btn btn-primary">Add Key</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+  const wsId = new URLSearchParams(location.search).get('id');
+  if (!wsId) redirectHome();
+
+  let allModels = [];    // [{key_id, key_name, provider, models:[]}]
+  let allTools = [];     // from connector definitions
+  let allInstances = []; // connected instances
+  let agents = [];
+  let editingAgentId = null;
+
+  async function init() {
+    const [ws, keys, defs, instances] = await Promise.all([
+      apiGet(`workspaces/${wsId}`),
+      apiGet('api-keys'),
+      apiGet('connectors/definitions'),
+      apiGet('connectors/instances'),
+    ]);
+    document.getElementById('ws-name').textContent = ws.name;
+    allInstances = instances || [];
+
+    // Build model list grouped by key
+    allModels = (keys || []).map(k => ({ key_id: k.id, key_name: k.key_name, provider: k.provider, models: k.available_models }));
+
+    // Build available tools from connected instances
+    allTools = [];
+    for (const inst of allInstances) {
+      const def = (defs || []).find(d => d.slug === inst.slug);
+      if (def) def.tools.forEach(t => allTools.push({ ...t, connector_slug: inst.slug }));
+    }
+
+    renderApiKeys(keys || []);
+    renderConnectors(defs || [], instances || []);
+    await loadAgents();
+  }
+
+  async function loadAgents() {
+    agents = await apiGet(`workspaces/${wsId}/agents`) || [];
+    renderAgents();
+  }
+
+  function renderAgents() {
+    const container = document.getElementById('custom-agents');
+    container.innerHTML = '';
+
+    // Populate master/composer model dropdowns
+    populateModelSelect('master-model');
+    populateModelSelect('composer-model');
+    populateModelSelect('agent-model');
+
+    const custom = agents.filter(a => a.agent_type === 'CUSTOM');
+    custom.forEach(agent => {
+      const div = document.createElement('div');
+      div.className = 'agent-card';
+      div.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">🤖</span>
+            <span style="font-weight:600;">${esc(agent.name)}</span>
+            ${agent.model_id ? `<span class="badge">${esc(agent.model_id)}</span>` : ''}
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button onclick="editAgent('${agent.id}')" class="btn btn-secondary btn-sm">Edit</button>
+            <button onclick="deleteAgent('${agent.id}')" class="btn btn-danger btn-sm">Delete</button>
+          </div>
+        </div>
+        ${agent.system_prompt ? `<p style="color:var(--text-muted); font-size:12px; line-height:1.5;">${esc(agent.system_prompt.slice(0, 120))}${agent.system_prompt.length > 120 ? '…' : ''}</p>` : ''}
+        ${agent.tools_config?.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${agent.tools_config.map(t => `<span class="badge">${esc(t.tool)}${t.requires_hitl ? ' 🔒' : ''}</span>`).join('')}</div>` : ''}`;
+      container.appendChild(div);
+    });
+  }
+
+  function populateModelSelect(id) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— select model —</option>';
+    for (const k of allModels) {
+      for (const m of k.models) {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ model_id: m, api_key_id: k.key_id });
+        opt.textContent = `${m} (${k.key_name})`;
+        sel.appendChild(opt);
+      }
+    }
+  }
+
+  function renderToolPicker() {
+    const container = document.getElementById('tool-picker');
+    container.innerHTML = '';
+    for (const tool of allTools) {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
+      label.innerHTML = `<input type="checkbox" data-tool='${JSON.stringify(tool)}'> ${esc(tool.connector_slug)}.${esc(tool.name)}${tool.requires_hitl ? ' 🔒' : ''}`;
+      container.appendChild(label);
+    }
+  }
+
+  function getSelectedTools() {
+    return Array.from(document.querySelectorAll('#tool-picker input:checked')).map(cb => JSON.parse(cb.dataset.tool));
+  }
+
+  async function generatePrompt() {
+    const desc = document.getElementById('agent-user-desc').value.trim();
+    if (!desc) { toast('Describe what the agent should do first', 'error'); return; }
+    const modelSel = document.getElementById('agent-model').value;
+    if (!modelSel) { toast('Select a model first', 'error'); return; }
+    const { api_key_id } = JSON.parse(modelSel);
+    const btn = document.getElementById('gen-btn');
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const data = await apiPost(`workspaces/${wsId}/agents/prompt-generate?api_key_id=${api_key_id}`, { user_description: desc });
+      document.getElementById('agent-prompt').value = data.generated_prompt;
+      // Pre-check recommended tools
+      document.querySelectorAll('#tool-picker input').forEach(cb => {
+        const t = JSON.parse(cb.dataset.tool);
+        if (data.recommended_tools?.some(r => r.tool === t.name && r.connector_slug === t.connector_slug)) cb.checked = true;
+      });
+      toast('Prompt generated!');
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Generate Prompt'; }
+  }
+
+  function editAgent(id) {
+    const agent = agents.find(a => a.id === id);
+    if (!agent) return;
+    editingAgentId = id;
+    document.getElementById('agent-modal-title').textContent = 'Edit Agent';
+    document.getElementById('agent-name').value = agent.name;
+    document.getElementById('agent-prompt').value = agent.system_prompt || '';
+    renderToolPicker();
+    if (agent.model_id && agent.api_key_id) {
+      document.getElementById('agent-model').value = JSON.stringify({ model_id: agent.model_id, api_key_id: agent.api_key_id });
+    }
+    agent.tools_config?.forEach(tc => {
+      document.querySelectorAll('#tool-picker input').forEach(cb => {
+        const t = JSON.parse(cb.dataset.tool);
+        if (t.name === tc.tool && t.connector_slug === tc.connector_slug) cb.checked = true;
+      });
+    });
+    showModal('modal-agent');
+  }
+
+  async function saveAgent() {
+    const name = document.getElementById('agent-name').value.trim();
+    const prompt = document.getElementById('agent-prompt').value.trim();
+    const modelVal = document.getElementById('agent-model').value;
+    if (!name) { toast('Agent name required', 'error'); return; }
+
+    const tools_config = getSelectedTools().map(t => ({
+      tool: t.name, connector_slug: t.connector_slug, requires_hitl: !!t.requires_hitl
+    }));
+
+    let model_id = null, api_key_id = null;
+    if (modelVal) { const parsed = JSON.parse(modelVal); model_id = parsed.model_id; api_key_id = parsed.api_key_id; }
+
+    const btn = document.getElementById('save-agent-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      if (editingAgentId) {
+        await apiPut(`agents/${editingAgentId}`, { name, system_prompt: prompt, model_id, api_key_id, tools_config });
+      } else {
+        await apiPost(`workspaces/${wsId}/agents`, { name, system_prompt: prompt, model_id, api_key_id, tools_config });
+      }
+      closeAgentModal();
+      await loadAgents();
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Save Agent'; }
+  }
+
+  async function deleteAgent(id) {
+    if (!confirm('Delete this agent?')) return;
+    try { await apiDelete(`agents/${id}`); await loadAgents(); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+
+  function closeAgentModal() {
+    editingAgentId = null;
+    document.getElementById('agent-modal-title').textContent = 'New Agent';
+    document.getElementById('agent-name').value = '';
+    document.getElementById('agent-prompt').value = '';
+    document.getElementById('agent-user-desc').value = '';
+    hideModal('modal-agent');
+  }
+
+  // Show tool picker when modal opens
+  document.getElementById('modal-agent').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeAgentModal();
+  });
+
+  async function addApiKey(e) {
+    e.preventDefault();
+    const btn = document.getElementById('add-key-btn');
+    btn.disabled = true; btn.textContent = 'Detecting…';
+    try {
+      await apiPost('api-keys', { key_name: document.getElementById('key-name').value, api_key: document.getElementById('key-value').value });
+      hideModal('modal-add-key');
+      document.getElementById('key-name').value = ''; document.getElementById('key-value').value = '';
+      toast('API key added');
+      await init();
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Add Key'; }
+  }
+
+  function renderApiKeys(keys) {
+    const el = document.getElementById('api-keys-list');
+    el.innerHTML = keys.length ? keys.map(k => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:8px; border:1px solid var(--border); border-radius:var(--radius); font-size:13px;">
+        <div>
+          <div style="font-weight:500;">${esc(k.key_name)}</div>
+          <div style="color:var(--text-muted); font-size:11px;">${esc(k.provider || 'unknown')} · ${k.available_models?.length || 0} models</div>
+        </div>
+        <button onclick="deleteKey('${k.id}')" class="btn btn-danger btn-sm">×</button>
+      </div>`).join('') : '<div style="color:var(--text-muted); font-size:13px;">No API keys added.</div>';
+  }
+
+  async function deleteKey(id) {
+    if (!confirm('Remove this API key?')) return;
+    try { await apiDelete(`api-keys/${id}`); await init(); } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function renderConnectors(defs, instances) {
+    const el = document.getElementById('connectors-list');
+    const connected = new Set(instances.map(i => i.slug));
+    el.innerHTML = defs.map(d => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:8px; border:1px solid var(--border); border-radius:var(--radius); font-size:13px;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span>${esc(d.icon || '')}</span>
+          <div>
+            <div style="font-weight:500;">${esc(d.display_name)}</div>
+            <div style="color:var(--text-muted); font-size:11px;">${d.tools?.length || 0} tools</div>
+          </div>
+        </div>
+        ${connected.has(d.slug)
+          ? '<span class="badge" style="color:green;">Connected</span>'
+          : `<button onclick="connectConnector('${d.slug}')" class="btn btn-secondary btn-sm">Connect</button>`}
+      </div>`).join('');
+  }
+
+  async function connectConnector(slug) {
+    try {
+      const data = await apiGet(`connectors/${slug}/auth-url`);
+      window.open(data.auth_url, '_blank');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function updateMasterAgent() {
+    const val = document.getElementById('master-model').value;
+    if (!val) return;
+    const { model_id, api_key_id } = JSON.parse(val);
+    const master = agents.find(a => a.agent_type === 'MASTER');
+    if (master) apiPut(`agents/${master.id}`, { model_id, api_key_id }).catch(e => toast(e.message, 'error'));
+  }
+
+  function updateComposerAgent() {
+    const val = document.getElementById('composer-model').value;
+    if (!val) return;
+    const { model_id, api_key_id } = JSON.parse(val);
+    const composer = agents.find(a => a.agent_type === 'COMPOSER');
+    if (composer) apiPut(`agents/${composer.id}`, { model_id, api_key_id }).catch(e => toast(e.message, 'error'));
+  }
+
+  function goChat() { window.location.href = `/chat.html?workspace_id=${wsId}`; }
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  init().then(() => renderToolPicker());
+</script>
+</body>
+</html>

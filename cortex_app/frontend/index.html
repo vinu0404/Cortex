@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Workspaces</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<!-- Nav -->
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <span style="font-weight:700; font-size:16px; letter-spacing:-0.5px;">Cortex</span>
+  <div style="display:flex; gap:12px; align-items:center;">
+    <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
+    <a href="/dashboard.html" class="btn btn-secondary btn-sm">Dashboard</a>
+    <button onclick="handleLogout()" class="btn btn-secondary btn-sm">Sign Out</button>
+  </div>
+</nav>
+
+<!-- Main -->
+<main style="max-width:1100px; margin:0 auto; padding:32px 24px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:28px;">
+    <div>
+      <h1 style="font-size:22px; font-weight:700;">Workspaces</h1>
+      <p style="color:var(--text-muted); font-size:14px; margin-top:2px;">Build and manage your agent pipelines</p>
+    </div>
+    <button onclick="showModal('modal-create-ws')" class="btn btn-primary">+ New Workspace</button>
+  </div>
+
+  <div id="workspaces-grid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px;">
+    <div style="display:flex; align-items:center; justify-content:center; height:160px; color:var(--text-muted);">
+      <div class="spinner"></div>
+    </div>
+  </div>
+
+  <div id="load-more-btn" class="hidden" style="text-align:center; margin-top:24px;">
+    <button onclick="loadMore()" class="btn btn-secondary">Load more</button>
+  </div>
+</main>
+
+<!-- Create Workspace Modal -->
+<div id="modal-create-ws" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">New Workspace</span>
+      <button class="modal-close" onclick="hideModal('modal-create-ws')">×</button>
+    </div>
+    <form onsubmit="createWorkspace(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Name</label>
+        <input id="ws-name" class="input" placeholder="My Agent Pipeline" required>
+      </div>
+      <div class="form-group">
+        <label>Description <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
+        <textarea id="ws-desc" class="textarea" placeholder="What does this workspace do?"></textarea>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-create-ws')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="create-ws-btn" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+
+  let nextCursor = null;
+  let hasNext = false;
+
+  async function loadWorkspaces(reset = true) {
+    if (reset) { nextCursor = null; document.getElementById('workspaces-grid').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:160px;color:var(--text-muted);"><div class="spinner"></div></div>'; }
+    try {
+      const params = new URLSearchParams({ limit: 20 });
+      if (nextCursor) params.set('cursor', nextCursor);
+      const data = await apiGet(`workspaces?${params}`);
+      if (reset) document.getElementById('workspaces-grid').innerHTML = '';
+      if (!data.items.length && reset) {
+        document.getElementById('workspaces-grid').innerHTML = '<div style="color:var(--text-muted); padding:40px 0; text-align:center; grid-column:1/-1;">No workspaces yet — create one to get started.</div>';
+        return;
+      }
+      data.items.forEach(ws => appendCard(ws));
+      nextCursor = data.next_cursor;
+      hasNext = data.has_next;
+      document.getElementById('load-more-btn').classList.toggle('hidden', !hasNext);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function appendCard(ws) {
+    const grid = document.getElementById('workspaces-grid');
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.cursor = 'pointer';
+    card.innerHTML = `
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:12px;">
+        <h3 style="font-size:15px; font-weight:600;">${esc(ws.name)}</h3>
+        <span class="badge">${new Date(ws.created_at).toLocaleDateString()}</span>
+      </div>
+      ${ws.description ? `<p style="color:var(--text-muted); font-size:13px; margin-bottom:16px; line-height:1.5;">${esc(ws.description)}</p>` : '<div style="margin-bottom:16px;"></div>'}
+      <div style="display:flex; gap:8px;">
+        <button onclick="event.stopPropagation(); goChat('${ws.id}')" class="btn btn-primary btn-sm">Chat</button>
+        <button onclick="event.stopPropagation(); goWorkspace('${ws.id}')" class="btn btn-secondary btn-sm">Build</button>
+        <button onclick="event.stopPropagation(); deleteWs('${ws.id}', this)" class="btn btn-danger btn-sm">Delete</button>
+      </div>`;
+    grid.appendChild(card);
+  }
+
+  async function loadMore() { await loadWorkspaces(false); }
+
+  async function createWorkspace(e) {
+    e.preventDefault();
+    const btn = document.getElementById('create-ws-btn');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+      await apiPost('workspaces', {
+        name: document.getElementById('ws-name').value,
+        description: document.getElementById('ws-desc').value || null,
+      });
+      hideModal('modal-create-ws');
+      document.getElementById('ws-name').value = '';
+      document.getElementById('ws-desc').value = '';
+      await loadWorkspaces();
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Create'; }
+  }
+
+  async function deleteWs(id, btn) {
+    if (!confirm('Delete this workspace?')) return;
+    btn.disabled = true;
+    try {
+      await apiDelete(`workspaces/${id}`);
+      await loadWorkspaces();
+    } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  }
+
+  function goChat(id) { window.location.href = `/chat.html?workspace_id=${id}`; }
+  function goWorkspace(id) { window.location.href = `/workspace.html?id=${id}`; }
+
+  async function handleLogout() {
+    const rt = getRefreshToken();
+    if (rt) {
+      try { await apiPost('auth/logout', { refresh_token: rt }); } catch {}
+    }
+    clearTokens(); redirectToAuth();
+  }
+
+  async function loadUser() {
+    try {
+      const user = await apiGet('auth/me');
+      document.getElementById('user-email').textContent = user.email;
+    } catch {}
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  loadUser();
+  loadWorkspaces();
+</script>
+</body>
+</html>

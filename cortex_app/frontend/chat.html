@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .msg-user { background:var(--accent); color:#fff; border-radius:12px 12px 4px 12px; padding:12px 16px; max-width:75%; align-self:flex-end; }
+    .msg-assistant { background:var(--surface); border:1px solid var(--border); border-radius:12px 12px 12px 4px; padding:12px 16px; max-width:85%; }
+    .msg-wrapper { display:flex; flex-direction:column; gap:2px; }
+    .sidebar { width:240px; flex-shrink:0; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+    .conv-item { padding:10px 14px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .conv-item:hover, .conv-item.active { background:var(--surface); }
+    .plan-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 16px; font-size:12px; color:var(--text-muted); font-family:monospace; }
+    .hitl-popup { position:fixed; bottom:80px; right:24px; width:360px; background:var(--bg); border:2px solid var(--accent); border-radius:var(--radius); padding:20px; box-shadow:0 4px 20px rgba(0,0,0,0.15); z-index:500; }
+    .artifact-mermaid { padding:12px; background:var(--surface); border-radius:var(--radius); margin-top:8px; overflow-x:auto; }
+    .artifact-code { padding:12px; background:#111; color:#eee; border-radius:var(--radius); margin-top:8px; font-family:monospace; font-size:12px; overflow-x:auto; white-space:pre-wrap; }
+    .suggestion-chip { padding:6px 12px; border:1px solid var(--border); border-radius:16px; font-size:12px; cursor:pointer; background:var(--bg); }
+    .suggestion-chip:hover { background:var(--surface); }
+  </style>
+</head>
+<body style="height:100vh; overflow:hidden;">
+
+<div style="display:flex; height:100vh;">
+
+  <!-- Conversation sidebar -->
+  <div class="sidebar">
+    <div style="padding:12px 14px; border-bottom:1px solid var(--border); display:flex; gap:8px;">
+      <a href="/index.html" class="btn btn-secondary btn-sm" style="flex:0 0 auto;">←</a>
+      <button onclick="newConversation()" class="btn btn-primary btn-sm" style="flex:1;">New Chat</button>
+    </div>
+    <div id="conv-list" style="flex:1; overflow-y:auto;"></div>
+    <div style="padding:10px 14px; border-top:1px solid var(--border);">
+      <select id="ws-selector" class="select" style="font-size:12px;" onchange="switchWorkspace()"></select>
+    </div>
+  </div>
+
+  <!-- Chat area -->
+  <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+
+    <!-- Plan bar -->
+    <div id="plan-bar" class="plan-bar hidden"></div>
+    <!-- Compacting banner -->
+    <div id="compacting-bar" class="hidden" style="background:#fffbea; border-bottom:1px solid #e5d900; padding:4px 16px; font-size:12px; color:#7a6a00;">
+      ✦ Summarising earlier conversation…
+    </div>
+
+    <!-- Messages -->
+    <div id="messages" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px;"></div>
+
+    <!-- Input area -->
+    <div style="border-top:1px solid var(--border); padding:14px 16px; display:flex; gap:10px; align-items:flex-end;">
+      <select id="persona-select" class="select" style="width:160px; flex-shrink:0; font-size:12px;"></select>
+      <textarea id="query-input" class="textarea" placeholder="Ask anything…" style="flex:1; min-height:40px; max-height:160px; resize:none;" onkeydown="handleKey(event)"></textarea>
+      <button onclick="sendMessage()" id="send-btn" class="btn btn-primary" style="flex-shrink:0; align-self:flex-end;">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- HITL popup -->
+<div id="hitl-popup" class="hitl-popup hidden">
+  <div style="font-weight:600; font-size:14px; margin-bottom:8px;">🔒 Tool Approval Required</div>
+  <div id="hitl-agent" style="color:var(--text-muted); font-size:13px; margin-bottom:6px;"></div>
+  <div id="hitl-tools" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px;"></div>
+  <div class="form-group" style="margin-bottom:12px;">
+    <label>Instructions <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
+    <textarea id="hitl-instructions" class="textarea" placeholder="Only send to john@example.com…" style="min-height:60px;"></textarea>
+  </div>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <button onclick="respondHitl(true)" class="btn btn-primary">Approve</button>
+    <button onclick="respondHitl(false)" class="btn btn-danger">Deny</button>
+    <span id="hitl-countdown" style="margin-left:auto; font-size:12px; color:var(--text-muted);"></span>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+  mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+
+  const params = new URLSearchParams(location.search);
+  let wsId = params.get('workspace_id');
+  let convId = params.get('conversation_id') || null;
+  let pendingHitlId = null;
+  let hitlTimer = null;
+  let personas = [];
+
+  async function init() {
+    const [workspaces, personaList] = await Promise.all([
+      apiGet('workspaces?limit=50'),
+      apiGet('personas'),
+    ]);
+    personas = personaList || [];
+    renderPersonaSelect();
+    const wsSel = document.getElementById('ws-selector');
+    (workspaces?.items || []).forEach(ws => {
+      const opt = document.createElement('option');
+      opt.value = ws.id; opt.textContent = ws.name;
+      if (ws.id === wsId) opt.selected = true;
+      wsSel.appendChild(opt);
+    });
+    if (!wsId && workspaces?.items?.length) wsId = workspaces.items[0].id;
+    await loadConversations();
+    if (convId) await loadHistory(convId);
+  }
+
+  function renderPersonaSelect() {
+    const sel = document.getElementById('persona-select');
+    sel.innerHTML = '<option value="">Default Persona</option>';
+    personas.forEach(p => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.appendChild(o); });
+  }
+
+  async function loadConversations() {
+    if (!wsId) return;
+    const data = await apiGet(`chat/conversations?workspace_id=${wsId}&limit=30`);
+    const list = document.getElementById('conv-list');
+    list.innerHTML = '';
+    (data?.items || []).forEach(conv => {
+      const div = document.createElement('div');
+      div.className = `conv-item${conv.id === convId ? ' active' : ''}`;
+      div.textContent = conv.title || 'New conversation';
+      div.onclick = () => { convId = conv.id; location.search = `?workspace_id=${wsId}&conversation_id=${conv.id}`; };
+      list.appendChild(div);
+    });
+  }
+
+  async function loadHistory(id) {
+    const msgs = await apiGet(`chat/conversations/${id}/messages`);
+    (msgs || []).forEach(m => appendMessage(m.role, m.content));
+  }
+
+  function newConversation() {
+    convId = null;
+    document.getElementById('messages').innerHTML = '';
+    document.getElementById('plan-bar').classList.add('hidden');
+    history.replaceState({}, '', `?workspace_id=${wsId}`);
+    document.querySelectorAll('.conv-item').forEach(e => e.classList.remove('active'));
+  }
+
+  function switchWorkspace() {
+    wsId = document.getElementById('ws-selector').value;
+    convId = null;
+    document.getElementById('messages').innerHTML = '';
+    document.getElementById('conv-list').innerHTML = '';
+    loadConversations();
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  async function sendMessage() {
+    const query = document.getElementById('query-input').value.trim();
+    if (!query || !wsId) return;
+
+    document.getElementById('query-input').value = '';
+    document.getElementById('send-btn').disabled = true;
+    document.getElementById('plan-bar').classList.add('hidden');
+    document.getElementById('compacting-bar').classList.add('hidden');
+
+    appendMessage('user', query);
+    const assistantEl = appendMessage('assistant', '');
+    const contentEl = assistantEl.querySelector('.msg-content');
+
+    const persona_id = document.getElementById('persona-select').value || null;
+
+    try {
+      let fullText = '';
+      for await (const { event, data } of sseStream('chat/stream', {
+        workspace_id: wsId,
+        conversation_id: convId,
+        query,
+        persona_id,
+      })) {
+        if (event === 'plan') {
+          document.getElementById('plan-bar').textContent = '→ ' + data.execution_order;
+          document.getElementById('plan-bar').classList.remove('hidden');
+        } else if (event === 'token') {
+          fullText += data.text;
+          contentEl.textContent = fullText;
+          scrollBottom();
+        } else if (event === 'artifact') {
+          renderArtifact(assistantEl, data);
+        } else if (event === 'suggestions') {
+          renderSuggestions(data.questions);
+        } else if (event === 'hitl_required') {
+          showHitl(data);
+        } else if (event === 'hitl_approved') {
+          clearHitl(); toast('HITL approved — continuing…');
+        } else if (event === 'hitl_denied') {
+          clearHitl(); toast('HITL denied', 'error');
+        } else if (event === 'compacting') {
+          document.getElementById('compacting-bar').classList.remove('hidden');
+        } else if (event === 'done') {
+          convId = data.conversation_id;
+          history.replaceState({}, '', `?workspace_id=${wsId}&conversation_id=${convId}`);
+          await loadConversations();
+        } else if (event === 'error') {
+          contentEl.textContent = '⚠ ' + data.message;
+          contentEl.style.color = 'var(--danger)';
+        }
+      }
+    } catch (err) {
+      contentEl.textContent = '⚠ ' + err.message;
+      contentEl.style.color = 'var(--danger)';
+    } finally {
+      document.getElementById('send-btn').disabled = false;
+      document.getElementById('compacting-bar').classList.add('hidden');
+    }
+  }
+
+  function appendMessage(role, text) {
+    const container = document.getElementById('messages');
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-wrapper';
+    wrap.style.alignItems = role === 'user' ? 'flex-end' : 'flex-start';
+    const bubble = document.createElement('div');
+    bubble.className = role === 'user' ? 'msg-user' : 'msg-assistant';
+    const content = document.createElement('span');
+    content.className = 'msg-content';
+    content.textContent = text;
+    bubble.appendChild(content);
+    wrap.appendChild(bubble);
+    container.appendChild(wrap);
+    scrollBottom();
+    return bubble;
+  }
+
+  function renderArtifact(bubble, artifact) {
+    const container = document.createElement('div');
+    container.style.marginTop = '8px';
+
+    if (artifact.type === 'mermaid') {
+      const div = document.createElement('div');
+      div.className = 'artifact-mermaid';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:11px; font-weight:600; color:var(--text-muted); margin-bottom:6px;';
+      title.textContent = '📊 ' + artifact.title;
+      div.appendChild(title);
+      const chart = document.createElement('div');
+      chart.textContent = artifact.content;
+      div.appendChild(chart);
+      container.appendChild(div);
+      mermaid.run({ nodes: [chart] });
+
+    } else if (artifact.type === 'csv') {
+      const div = document.createElement('div');
+      div.style.cssText = 'margin-top:8px;';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:11px; font-weight:600; color:var(--text-muted); margin-bottom:6px;';
+      title.textContent = '📄 ' + artifact.title;
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'font-size:11px; background:var(--surface); padding:8px; border-radius:4px; overflow-x:auto; border:1px solid var(--border);';
+      pre.textContent = artifact.content;
+      const btn = document.createElement('a');
+      btn.className = 'btn btn-secondary btn-sm';
+      btn.style.marginTop = '6px';
+      btn.textContent = '⬇ Download CSV';
+      btn.href = `data:text/csv;charset=utf-8,${encodeURIComponent(artifact.content)}`;
+      btn.download = artifact.filename || 'data.csv';
+      div.appendChild(title); div.appendChild(pre); div.appendChild(btn);
+      container.appendChild(div);
+
+    } else if (artifact.type === 'pdf') {
+      const btn = document.createElement('a');
+      btn.className = 'btn btn-secondary btn-sm';
+      btn.style.marginTop = '8px';
+      btn.textContent = '⬇ Download PDF';
+      btn.href = `data:application/pdf;base64,${artifact.content}`;
+      btn.download = artifact.filename || 'document.pdf';
+      container.appendChild(btn);
+
+    } else if (artifact.type === 'code') {
+      const div = document.createElement('div');
+      div.className = 'artifact-code';
+      const header = document.createElement('div');
+      header.style.cssText = 'font-size:10px; color:#999; margin-bottom:6px;';
+      header.textContent = artifact.language ? `${artifact.title} (${artifact.language})` : artifact.title;
+      div.appendChild(header);
+      div.appendChild(document.createTextNode(artifact.content));
+      container.appendChild(div);
+    }
+
+    bubble.appendChild(container);
+    scrollBottom();
+  }
+
+  function renderSuggestions(questions) {
+    const existing = document.getElementById('suggestions-bar');
+    if (existing) existing.remove();
+    const bar = document.createElement('div');
+    bar.id = 'suggestions-bar';
+    bar.style.cssText = 'padding:8px 20px 0; display:flex; flex-wrap:wrap; gap:6px;';
+    questions.forEach(q => {
+      const chip = document.createElement('button');
+      chip.className = 'suggestion-chip';
+      chip.textContent = q;
+      chip.onclick = () => { document.getElementById('query-input').value = q; bar.remove(); };
+      bar.appendChild(chip);
+    });
+    document.getElementById('messages').parentElement.insertBefore(
+      bar, document.getElementById('messages').nextSibling
+    );
+  }
+
+  // HITL
+  function showHitl({ request_id, agent_name, tool_names, timeout_seconds }) {
+    pendingHitlId = request_id;
+    document.getElementById('hitl-agent').textContent = `Agent: ${agent_name}`;
+    const toolsEl = document.getElementById('hitl-tools');
+    toolsEl.innerHTML = tool_names.map(t => `<span class="badge">${esc(t)}</span>`).join('');
+    document.getElementById('hitl-popup').classList.remove('hidden');
+    let remaining = timeout_seconds;
+    hitlTimer = setInterval(() => {
+      remaining--;
+      document.getElementById('hitl-countdown').textContent = `Auto-deny in ${remaining}s`;
+      if (remaining <= 0) { clearInterval(hitlTimer); respondHitl(false); }
+    }, 1000);
+  }
+
+  async function respondHitl(approved) {
+    if (!pendingHitlId) return;
+    clearHitl();
+    try {
+      await apiPost('hitl/respond', {
+        request_id: pendingHitlId,
+        approved,
+        instructions: document.getElementById('hitl-instructions').value || null,
+      });
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function clearHitl() {
+    clearInterval(hitlTimer);
+    pendingHitlId = null;
+    document.getElementById('hitl-instructions').value = '';
+    document.getElementById('hitl-popup').classList.add('hidden');
+  }
+
+  function scrollBottom() {
+    const el = document.getElementById('messages');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  init();
+</script>
+</body>
+</html>

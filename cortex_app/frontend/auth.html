@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Sign In</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body style="background:#f5f5f5; min-height:100vh; display:flex; align-items:center; justify-content:center;">
+
+<div style="width:360px;">
+  <div style="text-align:center; margin-bottom:32px;">
+    <h1 style="font-size:24px; font-weight:700; letter-spacing:-0.5px;">Cortex</h1>
+    <p style="color:var(--text-muted); margin-top:4px;">Multi-agent orchestration platform</p>
+  </div>
+
+  <div class="card">
+    <!-- Tab toggle -->
+    <div style="display:flex; gap:0; margin-bottom:24px; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;">
+      <button id="tab-login" onclick="switchTab('login')"
+        style="flex:1; padding:8px; font-size:14px; font-weight:500; background:var(--accent); color:#fff; border:none; cursor:pointer;">
+        Sign In
+      </button>
+      <button id="tab-register" onclick="switchTab('register')"
+        style="flex:1; padding:8px; font-size:14px; font-weight:500; background:transparent; color:var(--text); border:none; cursor:pointer;">
+        Register
+      </button>
+    </div>
+
+    <!-- Login form -->
+    <form id="form-login" onsubmit="handleLogin(event)">
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="form-group">
+          <label>Email</label>
+          <input id="login-email" type="email" class="input" placeholder="you@example.com" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="login-password" type="password" class="input" placeholder="••••••••" required>
+        </div>
+        <button type="submit" id="login-btn" class="btn btn-primary" style="width:100%; justify-content:center;">
+          Sign In
+        </button>
+      </div>
+    </form>
+
+    <!-- Register form -->
+    <form id="form-register" class="hidden" onsubmit="handleRegister(event)">
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="form-group">
+          <label>Email</label>
+          <input id="reg-email" type="email" class="input" placeholder="you@example.com" required>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="reg-password" type="password" class="input" placeholder="••••••••" minlength="8" required>
+        </div>
+        <button type="submit" id="reg-btn" class="btn btn-primary" style="width:100%; justify-content:center;">
+          Create Account
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  // Already logged in → go home
+  if (isLoggedIn()) redirectHome();
+
+  function switchTab(tab) {
+    const isLogin = tab === 'login';
+    document.getElementById('form-login').classList.toggle('hidden', !isLogin);
+    document.getElementById('form-register').classList.toggle('hidden', isLogin);
+    document.getElementById('tab-login').style.cssText = isLogin
+      ? 'flex:1;padding:8px;font-size:14px;font-weight:500;background:var(--accent);color:#fff;border:none;cursor:pointer;'
+      : 'flex:1;padding:8px;font-size:14px;font-weight:500;background:transparent;color:var(--text);border:none;cursor:pointer;';
+    document.getElementById('tab-register').style.cssText = !isLogin
+      ? 'flex:1;padding:8px;font-size:14px;font-weight:500;background:var(--accent);color:#fff;border:none;cursor:pointer;'
+      : 'flex:1;padding:8px;font-size:14px;font-weight:500;background:transparent;color:var(--text);border:none;cursor:pointer;';
+  }
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    const btn = document.getElementById('login-btn');
+    btn.disabled = true; btn.textContent = 'Signing in…';
+    try {
+      const data = await apiPost('auth/login', {
+        email: document.getElementById('login-email').value,
+        password: document.getElementById('login-password').value,
+      });
+      setTokens(data.access_token, data.refresh_token);
+      redirectHome();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Sign In';
+    }
+  }
+
+  async function handleRegister(e) {
+    e.preventDefault();
+    const btn = document.getElementById('reg-btn');
+    btn.disabled = true; btn.textContent = 'Creating account…';
+    try {
+      const data = await apiPost('auth/register', {
+        email: document.getElementById('reg-email').value,
+        password: document.getElementById('reg-password').value,
+      });
+      setTokens(data.access_token, data.refresh_token);
+      redirectHome();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Create Account';
+    }
+  }
+</script>
+</body>
+</html>
