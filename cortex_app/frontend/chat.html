@@ -186,6 +186,8 @@
           renderArtifact(assistantEl, data);
         } else if (event === 'suggestions') {
           renderSuggestions(data.questions);
+        } else if (event === 'status') {
+          document.getElementById('plan-bar').textContent = `⚙ ${data.agent_name} (${data.phase})`;
         } else if (event === 'hitl_required') {
           showHitl(data);
         } else if (event === 'hitl_approved') {
@@ -241,6 +243,7 @@
       title.textContent = '📊 ' + artifact.title;
       div.appendChild(title);
       const chart = document.createElement('div');
+      chart.className = 'mermaid';
       chart.textContent = artifact.content;
       div.appendChild(chart);
       container.appendChild(div);
@@ -323,13 +326,11 @@
 
   async function respondHitl(approved) {
     if (!pendingHitlId) return;
+    const id = pendingHitlId;
+    const instructions = document.getElementById('hitl-instructions').value || null;
     clearHitl();
     try {
-      await apiPost('hitl/respond', {
-        request_id: pendingHitlId,
-        approved,
-        instructions: document.getElementById('hitl-instructions').value || null,
-      });
+      await apiPost('hitl/respond', { request_id: id, approved, instructions });
     } catch (err) { toast(err.message, 'error'); }
   }
 

@@ -7,10 +7,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from cryptography.exceptions import InvalidTag
 from fastapi import Request
 from sqlalchemy import and_, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from tenacity import (
     before_sleep_log,
     retry,
@@ -23,7 +25,7 @@ from app.agents.db_models import Agent, AgentTypeEnum
 from app.api_keys.manager import ApiKeyManager
 from app.chat.db_models import MessageRoleEnum
 from app.chat.manager import ChatManager
-from app.common.exceptions import PlanValidationError, TokenBudgetExceededError
+from app.common.exceptions import NotFoundError, PlanValidationError, TokenBudgetExceededError
 from app.common.redis_client import get_async_redis
 from app.common.token_budget import TokenBudgetService
 from config.settings import get_settings
@@ -38,6 +40,8 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 _DB_RETRY_EXCEPTIONS = (OperationalError, InterfaceError)
+# Exceptions that indicate a key/token is permanently unreadable (not retriable)
+_KEY_LOAD_EXCEPTIONS = (OperationalError, InterfaceError, NotFoundError, InvalidTag, ValueError)
 
 
 def sse_event(data: str | dict, event: str | None = None) -> str:
@@ -65,16 +69,26 @@ async def chat_stream(
         yield sse_event({"message": e.message}, "error")
         return
 
-    agents_db, api_keys_db, master_model, master_key = await _load_workspace_context(
-        workspace_id, user_id, db
-    )
+    # Load workspace context — any uncaught exception yields error SSE and stops stream
+    try:
+        agents_db, api_keys_db, master_model, master_key, connector_tokens_db = (
+            await _load_workspace_context(workspace_id, user_id, db)
+        )
+        summaries, recent_messages = await chat_mgr.load_memory_context(conversation_id)
+        long_term_memory = await chat_mgr.get_long_term_memory(user_id)
+        persona_prompt = await _load_persona(persona_id, user_id, db) if persona_id else None
+    except _DB_RETRY_EXCEPTIONS as e:
+        logger.error("DB error loading workspace context for %s: %s", workspace_id, e)
+        yield sse_event({"message": "Database error while loading workspace"}, "error")
+        return
+    except Exception as e:
+        logger.exception("Unexpected error loading workspace context for %s", workspace_id)
+        yield sse_event({"message": f"Failed to load workspace: {e}"}, "error")
+        return
+
     if not master_key:
         yield sse_event({"message": "No API key configured for Master agent"}, "error")
         return
-
-    summaries, recent_messages = await chat_mgr.load_memory_context(conversation_id)
-    long_term_memory = await chat_mgr.get_long_term_memory(user_id)
-    persona_prompt = await _load_persona(persona_id, user_id, db) if persona_id else None
 
     mem_mgr = MemoryManager(conversation_id)
     mem_mgr.load(summaries, recent_messages)
@@ -84,13 +98,19 @@ async def chat_stream(
     if await request.is_disconnected():
         return
 
+    # Only CUSTOM agents are shown to the Master LLM; system agents excluded from plan
+    planning_agents_db = {
+        name: info for name, info in agents_db.items()
+        if info.get("agent_type") == AgentTypeEnum.CUSTOM.value
+    }
+
     # --- Planning ---
     yield sse_event({"phase": "planning", "agent_name": "Master"}, "status")
 
     try:
         plan = await generate_plan(
             query=query,
-            agents_db=agents_db,
+            agents_db=planning_agents_db,
             conversation_history=mem_mgr.get_window(),
             long_term_memory=long_term_memory,
             model_id=master_model,
@@ -115,13 +135,14 @@ async def chat_stream(
         long_term_memory=long_term_memory,
         agents_db=agents_db,
         api_keys_db=api_keys_db,
+        connector_tokens_db=connector_tokens_db,
         persona=persona_prompt,
     )
 
     hitl_futures: dict[str, asyncio.Future] = {}
 
     def on_hitl_needed(agent_id: str, agent_name: str, tool_names: list[str]) -> asyncio.Future:
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         hitl_futures[agent_id] = future
         return future
 
@@ -130,6 +151,10 @@ async def chat_stream(
 
     execute_task = asyncio.create_task(execute_plan(plan, ctx, on_hitl_needed))
 
+    # HITL state: one DB record + one SSE event per agent_id, no flooding
+    hitl_wait_tasks: dict[str, asyncio.Task] = {}
+    hitl_req_ids: dict[str, str] = {}
+
     while not execute_task.done():
         if await request.is_disconnected():
             execute_task.cancel()
@@ -137,24 +162,43 @@ async def chat_stream(
 
         for agent_id, future in list(hitl_futures.items()):
             if future.done():
+                hitl_wait_tasks.pop(agent_id, None)
+                hitl_req_ids.pop(agent_id, None)
                 continue
-            hitl_req = await _create_hitl_record(agent_id, plan, conversation_id, chat_mgr)
-            yield sse_event({
-                "request_id": str(hitl_req.id),
-                "agent_name": _get_step_name(agent_id, plan),
-                "tool_names": hitl_req.tool_names,
-                "timeout_seconds": settings.HITL_TIMEOUT_SECONDS,
-            }, "hitl_required")
 
-            decision = await _wait_for_hitl_decision(str(hitl_req.id))
-            if decision.get("approved"):
+            if agent_id not in hitl_wait_tasks:
+                # First encounter — create DB record and emit SSE exactly once
+                hitl_req = await _create_hitl_record(agent_id, plan, conversation_id, chat_mgr)
+                req_id_str = str(hitl_req.id)
+                hitl_req_ids[agent_id] = req_id_str
+                # Start wait task — subscribes to Redis in background
+                hitl_wait_tasks[agent_id] = asyncio.create_task(_wait_for_hitl_decision(req_id_str))
                 yield sse_event({
-                    "request_id": str(hitl_req.id),
-                    "instructions": decision.get("instructions"),
-                }, "hitl_approved")
-            else:
-                yield sse_event({"request_id": str(hitl_req.id)}, "hitl_denied")
-            future.set_result({"request_id": str(hitl_req.id), **decision})
+                    "request_id": req_id_str,
+                    "agent_name": _get_step_name(agent_id, plan),
+                    "tool_names": hitl_req.tool_names,
+                    "timeout_seconds": settings.HITL_TIMEOUT_SECONDS,
+                }, "hitl_required")
+
+            elif hitl_wait_tasks[agent_id].done():
+                # Decision arrived — resolve future and emit result SSE
+                req_id_str = hitl_req_ids[agent_id]
+                try:
+                    decision = hitl_wait_tasks[agent_id].result()
+                except asyncio.CancelledError:
+                    decision = {"approved": False, "instructions": None}
+                except Exception:
+                    logger.exception("HITL wait task failed for agent %s — auto-denying", agent_id)
+                    decision = {"approved": False, "instructions": None}
+
+                if decision.get("approved"):
+                    yield sse_event({"request_id": req_id_str, "instructions": decision.get("instructions")}, "hitl_approved")
+                else:
+                    yield sse_event({"request_id": req_id_str}, "hitl_denied")
+
+                future.set_result({"request_id": req_id_str, **decision})
+                hitl_wait_tasks.pop(agent_id, None)
+                hitl_req_ids.pop(agent_id, None)
 
         await asyncio.sleep(0.05)
 
@@ -179,17 +223,22 @@ async def chat_stream(
     # --- Composing ---
     yield sse_event({"phase": "composing", "agent_name": "Composer"}, "status")
 
-    composer_model, composer_key = await _get_composer_key(workspace_id, user_id, db)
-    response_text, artifacts, suggestions = await compose_response(
-        query=query,
-        agent_outputs=agent_outputs,
-        conversation_history=mem_mgr.get_window(),
-        long_term_memory=long_term_memory,
-        model_id=composer_model,
-        api_key=composer_key,
-        conversation_id=str(conversation_id),
-        persona=persona_prompt,
-    )
+    try:
+        composer_model, composer_key = await _get_composer_key(workspace_id, user_id, db)
+        response_text, artifacts, suggestions, composer_tokens = await compose_response(
+            query=query,
+            agent_outputs=agent_outputs,
+            conversation_history=mem_mgr.get_window(),
+            long_term_memory=long_term_memory,
+            model_id=composer_model,
+            api_key=composer_key,
+            conversation_id=str(conversation_id),
+            persona=persona_prompt,
+        )
+    except Exception:
+        logger.exception("Composer failed for conversation %s", conversation_id)
+        yield sse_event({"message": "Composer failed — please retry"}, "error")
+        return
 
     for char in response_text:
         if await request.is_disconnected():
@@ -207,6 +256,12 @@ async def chat_stream(
         conversation_id, MessageRoleEnum.assistant, response_text, latency_ms=elapsed_ms
     )
     mem_mgr.add_message("assistant", response_text)
+
+    # Record token usage for budget enforcement (fire-and-forget)
+    agent_tokens = sum(o.resource_usage.get("tokens_used", 0) for o in agent_outputs.values())
+    total_tokens = agent_tokens + composer_tokens
+    if total_tokens > 0:
+        asyncio.create_task(TokenBudgetService().record_usage(user_id, total_tokens))
 
     from database.session import get_custom_db_context_session
 
@@ -259,9 +314,10 @@ async def _wait_for_hitl_decision(request_id: str) -> dict:
     redis = get_async_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe(f"hitl:{request_id}")
-    deadline = asyncio.get_event_loop().time() + settings.HITL_TIMEOUT_SECONDS
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settings.HITL_TIMEOUT_SECONDS
     try:
-        while asyncio.get_event_loop().time() < deadline:
+        while loop.time() < deadline:
             try:
                 msg = await asyncio.wait_for(
                     pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
@@ -287,9 +343,27 @@ async def _fetch_api_key(key_mgr: ApiKeyManager, key_id: UUID, user_id: UUID) ->
     return await key_mgr.get_decrypted_key(key_id, user_id)
 
 
+@retry(
+    stop=stop_after_attempt(settings.REDIS_MAX_RETRIES),
+    wait=wait_fixed(settings.REDIS_RETRY_WAIT_FIXED),
+    retry=retry_if_exception_type(_DB_RETRY_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+async def _fetch_connector_instances(user_id: UUID, db: AsyncSession) -> list:
+    from app.connectors.db_models import ConnectorInstance
+    return list(await db.scalars(
+        select(ConnectorInstance)
+        .where(ConnectorInstance.user_id == user_id)
+        .options(selectinload(ConnectorInstance.definition))
+    ))
+
+
 async def _load_workspace_context(
     workspace_id: UUID, user_id: UUID, db: AsyncSession
-) -> tuple[dict, dict, str, str]:
+) -> tuple[dict, dict, str, str, dict]:
+    from app.connectors.encryption import decrypt_json
+
     agents = list(await db.scalars(
         select(Agent).where(
             and_(Agent.workspace_id == workspace_id, Agent.deleted_at.is_(None))
@@ -314,14 +388,31 @@ async def _load_workspace_context(
         if agent.api_key_id and agent.api_key_id not in api_keys_db:
             try:
                 api_keys_db[agent.api_key_id] = await _fetch_api_key(key_mgr, agent.api_key_id, user_id)
-            except Exception:
-                logger.warning("Failed to decrypt key %s for agent %s — agent will run without key", agent.api_key_id, agent.name)
+            except _KEY_LOAD_EXCEPTIONS as e:
+                # Key unreadable after retries — agent will run keyless (logged, non-fatal)
+                logger.warning(
+                    "Key %s for agent '%s' unreadable (%s) — agent will run without key",
+                    agent.api_key_id, agent.name, type(e).__name__,
+                )
 
         if agent.agent_type == AgentTypeEnum.MASTER and agent.api_key_id:
             master_model = agent.model_id or settings.DEFAULT_MODEL
             master_key = api_keys_db.get(agent.api_key_id, "")
 
-    return agents_db, api_keys_db, master_model, master_key
+    # Load OAuth tokens for connector tool injection
+    connector_tokens_db: dict[str, dict] = {}
+    instances = await _fetch_connector_instances(user_id, db)
+    for inst in instances:
+        try:
+            connector_tokens_db[inst.definition.slug] = decrypt_json(inst.encrypted_tokens)
+        except (InvalidTag, ValueError) as e:
+            # Corrupted/wrong-key token — log and skip this connector
+            logger.warning(
+                "Connector '%s' tokens undecryptable (%s) — tools for this connector unavailable",
+                inst.definition.slug, type(e).__name__,
+            )
+
+    return agents_db, api_keys_db, master_model, master_key, connector_tokens_db
 
 
 @retry(

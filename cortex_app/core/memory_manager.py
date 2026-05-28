@@ -31,7 +31,8 @@ class MemoryManager:
         return self._messages[-settings.SHORT_TERM_MEMORY_WINDOW:]
 
     def needs_compression(self) -> bool:
-        return len(self._messages) > settings.SHORT_TERM_MEMORY_WINDOW
+        non_system = sum(1 for m in self._messages if m["role"] != "system")
+        return non_system > settings.SHORT_TERM_MEMORY_WINDOW
 
     async def compress(self, model_id: str, api_key: str) -> str | None:
         if not self.needs_compression():
@@ -59,8 +60,8 @@ class MemoryManager:
                 + self._messages[settings.SHORT_TERM_COMPRESS_FIRST_N:]
             )
             return summary
-        except Exception as e:
-            logger.warning("Memory compression failed: %s", e)
+        except Exception:
+            logger.exception("Memory compression failed")
             return None
 
 
@@ -107,5 +108,5 @@ async def _evaluate_long_term(
         extraction = LongTermMemoryExtraction.model_validate_json(resp.choices[0].message.content)
         if extraction.should_store:
             await db_updater(user_id, extraction.critical_facts, extraction.preferences)
-    except Exception as e:
-        logger.warning("Long-term memory extraction failed: %s", e)
+    except Exception:
+        logger.exception("Long-term memory extraction failed")

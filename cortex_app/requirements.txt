@@ -43,6 +43,9 @@ qdrant-client==1.12.1
 python-dotenv==1.0.1
 passlib==1.7.4
 
+# PDF generation
+reportlab==4.2.5
+
 # OAuth
 requests-oauthlib==2.0.0
 google-auth==2.37.0

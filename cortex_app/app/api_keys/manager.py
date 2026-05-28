@@ -74,8 +74,8 @@ def _discover_models_sync(provider: str, raw_key: str) -> list[str]:
             resp.raise_for_status()
             return [m["id"] for m in resp.json().get("data", [])]
 
-    except Exception as e:
-        logger.warning("Model discovery failed for %s: %s", provider, e)
+    except Exception:
+        logger.exception("Model discovery failed for provider %s", provider)
 
     return []
 
@@ -86,7 +86,7 @@ class ApiKeyManager:
 
     async def create_key(self, user_id: UUID, key_name: str, raw_key: str) -> UserApiKey:
         provider = _detect_provider(raw_key)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         models = await loop.run_in_executor(None, _discover_models_sync, provider, raw_key)
 
         key_record = UserApiKey(

@@ -12,7 +12,7 @@ from tenacity import (
 )
 
 from config.settings import get_settings
-from core.schemas import AgentInput, AgentOutput, ArtifactPreview
+from core.schemas import AgentInput, AgentOutput
 from tools.registry import get_registry
 
 settings = get_settings()
@@ -48,14 +48,29 @@ def _build_system_prompt(agent_def: dict, agent_input: AgentInput) -> str:
     return "\n".join(parts)
 
 
+_PY_TO_JSON: dict = {int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
+
+
+def _py_type_to_json(annotation: Any) -> str:
+    import inspect as _inspect
+    if annotation is _inspect.Parameter.empty:
+        return "string"
+    origin = getattr(annotation, "__origin__", None)
+    if origin is list:
+        return "array"
+    if origin is dict:
+        return "object"
+    return _PY_TO_JSON.get(annotation, "string")
+
+
 def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
+    import inspect
     registry = get_registry()
     schemas = []
     for name in tool_names:
         fn = registry.get_callable(name)
         if not fn:
             continue
-        import inspect
         sig = inspect.signature(fn)
         props = {}
         required = []
@@ -64,7 +79,10 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
                 continue
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
-            props[param_name] = {"type": "string", "description": f"{param_name} parameter"}
+            props[param_name] = {
+                "type": _py_type_to_json(param.annotation),
+                "description": f"{param_name} parameter",
+            }
         schemas.append({
             "type": "function",
             "function": {
@@ -81,6 +99,7 @@ async def run_dynamic_agent(
     agent_def: dict,
     model_id: str,
     api_key: str,
+    connector_tokens_db: dict[str, dict] | None = None,
 ) -> AgentOutput:
     if agent_input.hitl_context and not agent_input.hitl_context.approved:
         return AgentOutput(
@@ -100,7 +119,10 @@ async def run_dynamic_agent(
         {"role": "user", "content": agent_input.task},
     ]
 
-    result_text, tool_results = await _run_with_tools(messages, tool_schemas, model_id, api_key, agent_input)
+    ctokens = connector_tokens_db or {}
+    result_text, tool_results, tokens_used = await _run_with_tools(
+        messages, tool_schemas, model_id, api_key, agent_input, ctokens
+    )
 
     return AgentOutput(
         agent_id=agent_input.agent_id,
@@ -108,6 +130,7 @@ async def run_dynamic_agent(
         task_description=agent_input.task,
         task_done=True,
         data={"response": result_text, "tool_results": tool_results},
+        resource_usage={"tokens_used": tokens_used, "time_taken_ms": 0},
         metadata={"model_used": model_id},
     )
 
@@ -129,7 +152,8 @@ async def _run_with_tools(
     model_id: str,
     api_key: str,
     agent_input: AgentInput,
-) -> tuple[str, list[dict]]:
+    connector_tokens_db: dict[str, dict],
+) -> tuple[str, list[dict], int]:
     kwargs: dict[str, Any] = {
         "model": model_id,
         "messages": messages,
@@ -142,15 +166,19 @@ async def _run_with_tools(
 
     response = await litellm.acompletion(**kwargs)
     msg = response.choices[0].message
+    tokens_used: int = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
 
     tool_results: list[dict] = []
     if getattr(msg, "tool_calls", None):
-        tool_results = await _execute_tool_calls(msg.tool_calls, agent_input)
+        tool_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db)
 
-    return msg.content or "", tool_results
+    return msg.content or "", tool_results, tokens_used
 
 
-async def _execute_tool_calls(tool_calls: list, agent_input: AgentInput) -> list[dict]:
+async def _execute_tool_calls(
+    tool_calls: list,
+    connector_tokens_db: dict[str, dict],
+) -> list[dict]:
     registry = get_registry()
     results = []
     for tc in tool_calls:
@@ -161,9 +189,18 @@ async def _execute_tool_calls(tool_calls: list, agent_input: AgentInput) -> list
             continue
         try:
             args = json.loads(tc.function.arguments)
+            connector_slug = getattr(fn, "connector", "")
+            if connector_slug and connector_slug in connector_tokens_db:
+                tokens = connector_tokens_db[connector_slug]
+                args["access_token"] = tokens.get("access_token", "")
+                if "instance_url" in tokens:
+                    args["instance_url"] = tokens["instance_url"]
             result = await fn(**args)
             results.append({"tool": fn_name, "result": result})
+        except (TypeError, json.JSONDecodeError) as e:
+            logger.error("Tool %s argument error: %s", fn_name, e)
+            results.append({"tool": fn_name, "error": str(e)})
         except Exception as e:
-            logger.warning("Tool %s failed: %s", fn_name, e)
+            logger.exception("Tool %s execution failed", fn_name)
             results.append({"tool": fn_name, "error": str(e)})
     return results

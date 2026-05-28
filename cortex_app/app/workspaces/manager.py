@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import ForbiddenError, NotFoundError
@@ -66,10 +66,23 @@ class WorkspaceManager:
         return ws
 
     async def delete_workspace(self, workspace_id: UUID, user_id: UUID) -> None:
+        from app.agents.db_models import Agent
+        from app.chat.db_models import Conversation
+
         ws = await self.get_workspace(workspace_id, user_id)
         ws.deleted_at = datetime.now(timezone.utc)
-        for agent in ws.agents:
-            agent.deleted_at = datetime.now(timezone.utc)
+
+        # Soft-delete agents via bulk UPDATE (avoids lazy-load MissingGreenlet)
+        await self._db.execute(
+            update(Agent)
+            .where(and_(Agent.workspace_id == workspace_id, Agent.deleted_at.is_(None)))
+            .values(deleted_at=datetime.now(timezone.utc))
+        )
+
+        # Hard-delete conversations (plan spec: cascade on soft-delete)
+        await self._db.execute(
+            delete(Conversation).where(Conversation.workspace_id == workspace_id)
+        )
 
     async def _create_system_agents(self, workspace: Workspace) -> None:
         from app.agents.db_models import Agent, AgentTypeEnum

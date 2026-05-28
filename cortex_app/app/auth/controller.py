@@ -56,11 +56,12 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> J
 async def logout(
     body: RefreshRequest,
     credentials=Depends(_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
         manager = AuthManager(db)
-        await manager.logout(body.refresh_token)
+        await manager.logout(body.refresh_token, current_user.id)
 
         # Blacklist the access token
         access_token = credentials.credentials

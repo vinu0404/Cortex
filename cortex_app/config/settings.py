@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     REDIS_MAX_RETRIES: int = 2
     REDIS_RETRY_WAIT_FIXED: float = 0.5
 
+    # --- CORS ---
+    CORS_ORIGINS: list[str] = []
+
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

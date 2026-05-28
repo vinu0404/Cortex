@@ -47,6 +47,27 @@ def _is_retriable(exc: Exception) -> bool:
     before_sleep=before_sleep_log(logger, 30),
     reraise=True,
 )
+async def _call_composer_llm(
+    prompt_text: str,
+    model_id: str,
+    api_key: str,
+    conversation_id: str,
+) -> tuple[ComposerOutput, int]:
+    response = await litellm.acompletion(
+        model=model_id,
+        messages=[{"role": "user", "content": prompt_text}],
+        response_format=ComposerOutput,
+        api_key=api_key,
+        metadata={
+            "trace_name": "composer_agent",
+            "trace_session_id": conversation_id,
+            "tags": ["orchestration"],
+        },
+    )
+    tokens: int = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+    return ComposerOutput.model_validate_json(response.choices[0].message.content), tokens
+
+
 async def compose_response(
     query: str,
     agent_outputs: dict[str, AgentOutput],
@@ -56,8 +77,8 @@ async def compose_response(
     api_key: str,
     conversation_id: str,
     persona: str | None = None,
-) -> tuple[str, list[ComposerArtifact], list[str]]:
-    """Returns (response_text, artifacts, suggested_questions)."""
+) -> tuple[str, list[ComposerArtifact], list[str], int]:
+    """Returns (response_text, artifacts, suggested_questions, tokens_used)."""
     successful = {k: v for k, v in agent_outputs.items() if v.task_done and not v.error}
     failed = {k: v for k, v in agent_outputs.items() if v.error}
 
@@ -76,21 +97,8 @@ async def compose_response(
         "persona": persona or "Default — be helpful and concise.",
     })
 
-    response = await litellm.acompletion(
-        model=model_id,
-        messages=[{"role": "user", "content": prompt_text}],
-        response_format=ComposerOutput,
-        api_key=api_key,
-        metadata={
-            "trace_name": "composer_agent",
-            "trace_session_id": conversation_id,
-            "tags": ["orchestration"],
-        },
-    )
+    result, tokens = await _call_composer_llm(prompt_text, model_id, api_key, conversation_id)
 
-    result = ComposerOutput.model_validate_json(response.choices[0].message.content)
-
-    # Generate PDF content if there's a pdf artifact
     artifacts = []
     for artifact in result.artifacts:
         if artifact.type == "pdf":
@@ -103,7 +111,7 @@ async def compose_response(
             conversation_history, result.response, model_id, api_key, conversation_id
         )
 
-    return result.response, artifacts, suggestions
+    return result.response, artifacts, suggestions, tokens
 
 
 async def _generate_pdf(artifact: ComposerArtifact) -> ComposerArtifact:

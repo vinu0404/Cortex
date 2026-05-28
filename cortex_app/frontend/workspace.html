@@ -179,11 +179,16 @@
     // Build model list grouped by key
     allModels = (keys || []).map(k => ({ key_id: k.id, key_name: k.key_name, provider: k.provider, models: k.available_models }));
 
-    // Build available tools from connected instances
+    // Build available tools: oauth2 from connected instances + apikey always available
     allTools = [];
     for (const inst of allInstances) {
       const def = (defs || []).find(d => d.slug === inst.slug);
       if (def) def.tools.forEach(t => allTools.push({ ...t, connector_slug: inst.slug }));
+    }
+    for (const def of (defs || [])) {
+      if (def.auth_type === 'apikey') {
+        def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
+      }
     }
 
     renderApiKeys(keys || []);
@@ -387,9 +392,11 @@
             <div style="color:var(--text-muted); font-size:11px;">${d.tools?.length || 0} tools</div>
           </div>
         </div>
-        ${connected.has(d.slug)
-          ? '<span class="badge" style="color:green;">Connected</span>'
-          : `<button onclick="connectConnector('${d.slug}')" class="btn btn-secondary btn-sm">Connect</button>`}
+        ${d.auth_type === 'apikey'
+          ? '<span class="badge" style="color:blue;">Built-in</span>'
+          : connected.has(d.slug)
+            ? '<span class="badge" style="color:green;">Connected</span>'
+            : `<button onclick="connectConnector('${d.slug}')" class="btn btn-secondary btn-sm">Connect</button>`}
       </div>`).join('');
   }
 

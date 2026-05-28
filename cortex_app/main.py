@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Cortex started [%s]", settings.ENVIRONMENT)
     yield
 
+    from app.common.langfuse_client import get_langfuse
+    get_langfuse().flush()
     await engine.dispose()
     logger.info("Cortex shutdown")
 
@@ -61,7 +63,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
-cors_origins = ["*"] if settings.is_dev else []
+cors_origins = ["*"] if settings.is_dev else settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

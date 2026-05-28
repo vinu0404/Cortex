@@ -81,7 +81,7 @@ async def update_agent(
     try:
         manager = AgentManager(db)
         updates = {k: v for k, v in body.model_dump(exclude_none=True).items()}
-        if "tools_config" in updates and updates["tools_config"]:
+        if "tools_config" in updates:
             updates["tools_config"] = [t if isinstance(t, dict) else t for t in updates["tools_config"]]
         agent = await manager.update_agent(agent_id, current_user.id, **updates)
         return ok(AgentResponse.model_validate(agent).model_dump(mode="json"))

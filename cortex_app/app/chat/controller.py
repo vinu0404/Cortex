@@ -126,6 +126,7 @@ async def hitl_respond(
         await chat_mgr.resolve_hitl_request(
             body.request_id, current_user.id, body.approved, body.instructions
         )
+        await db.commit()  # commit before publish so SSE stream sees updated status
         redis = get_async_redis()
         payload = json.dumps({
             "approved": body.approved,

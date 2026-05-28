@@ -21,6 +21,7 @@ class CalendarConnector(BaseConnector):
     ]
 
     def get_auth_url(self, state: str) -> str:
+        from urllib.parse import urlencode
         params = {
             "client_id": settings.GOOGLE_CLIENT_ID,
             "redirect_uri": settings.GOOGLE_REDIRECT_URI,
@@ -30,8 +31,7 @@ class CalendarConnector(BaseConnector):
             "prompt": "consent",
             "state": state,
         }
-        query = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{_AUTH_URL}?{query}"
+        return f"{_AUTH_URL}?{urlencode(params)}"
 
     async def handle_callback(self, code: str, state: str) -> dict:
         async with httpx.AsyncClient() as client:

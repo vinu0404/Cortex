@@ -65,6 +65,8 @@ class AuthManager:
             raise UnauthorizedError("Invalid email or password")
         if not user.is_active:
             raise UnauthorizedError("Account is inactive")
+        if _ph.check_needs_rehash(user.hashed_password):
+            user.hashed_password = _hash_password(password)
         return await self._issue_tokens(user)
 
     async def refresh(self, raw_token: str) -> TokenResponse:
@@ -89,14 +91,14 @@ class AuthManager:
 
         return await self._issue_tokens(user)
 
-    async def logout(self, raw_token: str) -> None:
+    async def logout(self, raw_token: str, user_id: UUID) -> None:
         token_hash = _hash_token(raw_token)
         record = await self._db.scalar(
             select(RefreshToken)
             .where(RefreshToken.token_hash == token_hash)
             .where(RefreshToken.revoked_at.is_(None))
         )
-        if record:
+        if record and record.user_id == user_id:
             record.revoked_at = datetime.now(timezone.utc)
 
     async def get_user_by_id(self, user_id: UUID) -> User | None:

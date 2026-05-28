@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Callable
-from typing import Any
+from collections.abc import Callable
 from uuid import UUID
 
+from config.settings import get_settings
 from core.dependency_resolver import resolve_stages
 from core.schemas import (
     AgentInput,
@@ -15,6 +15,8 @@ from core.schemas import (
     ResolvedAgentTask,
 )
 from tools.registry import get_registry
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class OrchestrationContext:
         long_term_memory: LongTermMemory,
         agents_db: dict[str, dict],  # name → {id, system_prompt, model_id, api_key_id, tools_config}
         api_keys_db: dict[UUID, str],  # api_key_id → decrypted key
+        connector_tokens_db: dict[str, dict],  # connector_slug → decrypted token dict
         persona: str | None = None,
     ):
         self.user_id = user_id
@@ -38,6 +41,7 @@ class OrchestrationContext:
         self.long_term_memory = long_term_memory
         self.agents_db = agents_db
         self.api_keys_db = api_keys_db
+        self.connector_tokens_db = connector_tokens_db
         self.persona = persona
 
 
@@ -106,13 +110,15 @@ async def _run_agent(
             error=f"Agent '{task.agent_name}' not found in workspace",
         )
 
-    dependency_outputs = {
-        dep_id: shared_state[dep_id].data
-        for dep_id in task.depends_on
-        if dep_id in shared_state
-    }
+    dependency_outputs = {}
+    for dep_id in task.depends_on:
+        if dep_id in shared_state:
+            dep_data = shared_state[dep_id].data
+            if dep_data is None:
+                logger.warning("Upstream agent %s produced no data; task %s may be incomplete", dep_id, task.agent_id)
+            dependency_outputs[dep_id] = dep_data
 
-    hitl_context = await _check_hitl(task, agent_def, context, on_hitl_needed)
+    hitl_context = await _check_hitl(task, agent_def, on_hitl_needed)
 
     agent_input = AgentInput(
         agent_id=task.agent_id,
@@ -133,10 +139,12 @@ async def _run_agent(
 
     api_key_id = agent_def.get("api_key_id")
     raw_key = context.api_keys_db.get(api_key_id, "") if api_key_id else ""
-    model_id = agent_def.get("model_id", "gpt-4o")
+    model_id = agent_def.get("model_id") or settings.DEFAULT_MODEL
 
     start = time.monotonic()
-    output = await run_dynamic_agent(agent_input, agent_def, model_id, raw_key)
+    output = await run_dynamic_agent(
+        agent_input, agent_def, model_id, raw_key, context.connector_tokens_db
+    )
     elapsed_ms = int((time.monotonic() - start) * 1000)
     output.resource_usage["time_taken_ms"] = elapsed_ms
 
@@ -146,7 +154,6 @@ async def _run_agent(
 async def _check_hitl(
     task: ResolvedAgentTask,
     agent_def: dict,
-    context: OrchestrationContext,
     on_hitl_needed: Callable,
 ) -> HitlResolvedDecision | None:
     registry = get_registry()

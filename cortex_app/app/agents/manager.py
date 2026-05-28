@@ -14,7 +14,6 @@ from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.common.langfuse_client import get_compiled_prompt
 from app.connectors.manager import ConnectorManager
 from config.settings import get_settings
-from tools.registry import get_registry
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -53,6 +52,9 @@ class AgentManager:
         display_order: int,
         tools_config: list[dict],
     ) -> Agent:
+        from app.workspaces.manager import WorkspaceManager
+        await WorkspaceManager(self._db).get_workspace(workspace_id, user_id)
+
         agent = Agent(
             workspace_id=workspace_id,
             user_id=user_id,
@@ -98,7 +100,6 @@ class AgentManager:
 
         connector_mgr = ConnectorManager(self._db)
         instances = await connector_mgr.list_user_instances(user_id)
-        registry = get_registry()
 
         available_tools = []
         for inst in instances:
@@ -113,10 +114,11 @@ class AgentManager:
             for t in available_tools
         )
 
+        from app.connectors.encryption import decrypt_str
         key_mgr = ApiKeyManager(self._db)
-        raw_key = await key_mgr.get_decrypted_key(api_key_id, user_id)
         key_rec = await key_mgr._get_key(api_key_id, user_id)
-        model_id = key_rec.available_models[0] if key_rec.available_models else "gpt-4o"
+        raw_key = decrypt_str(key_rec.encrypted_key)
+        model_id = key_rec.available_models[0] if key_rec.available_models else settings.DEFAULT_MODEL
 
         prompt_text = get_compiled_prompt("agent_prompt_generator", {
             "user_description": user_description,

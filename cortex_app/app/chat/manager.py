@@ -176,9 +176,13 @@ class ChatManager:
         req = await self._db.get(HitlRequest, request_id)
         if not req:
             raise NotFoundError("HitlRequest", str(request_id))
+        conv = await self._db.get(Conversation, req.conversation_id)
+        if not conv or conv.user_id != user_id:
+            raise ForbiddenError("Access denied")
         req.status = HitlStatusEnum.approved if approved else HitlStatusEnum.denied
         req.user_instructions = instructions
         req.updated_at = datetime.now(timezone.utc)
+        await self._db.flush()
         return req
 
     async def update_conversation_title(self, conversation_id: UUID, title: str) -> None:

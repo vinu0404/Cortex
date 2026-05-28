@@ -1,5 +1,4 @@
 import logging
-import uuid
 from uuid import UUID
 
 from sqlalchemy import select
@@ -61,6 +60,17 @@ _CONNECTOR_DEFINITIONS = [
             {"name": "salesforce_update_record", "description": "Update a Salesforce record", "requires_hitl": True},
         ],
     },
+    {
+        "slug": "tavily",
+        "display_name": "Web Search (Tavily)",
+        "auth_type": "apikey",
+        "icon": "🔍",
+        "tools": [
+            {"name": "web_search", "description": "Search the web", "requires_hitl": False},
+            {"name": "web_search_news", "description": "Search recent news", "requires_hitl": False},
+            {"name": "fetch_url", "description": "Extract content from a URL", "requires_hitl": False},
+        ],
+    },
 ]
 
 
@@ -77,8 +87,8 @@ class ConnectorManager:
                 self._db.add(ConnectorDefinition(**defn))
         try:
             await self._db.flush()
-        except Exception as e:
-            logger.warning("Seed failed (likely already exists): %s", e)
+        except IntegrityError as e:
+            logger.warning("Connector definition seed skipped (already exists): %s", e)
 
     async def list_definitions(self) -> list[ConnectorDefinition]:
         result = await self._db.scalars(
@@ -97,12 +107,22 @@ class ConnectorManager:
 
     async def get_auth_url(self, slug: str, user_id: UUID) -> tuple[str, str]:
         import secrets
+        from app.common.redis_client import get_async_redis
         defn = await self._get_definition(slug)
+        if defn.auth_type.value != "oauth2":
+            raise ValueError(f"Connector '{slug}' does not use OAuth2")
         connector = self._get_connector_class(slug)()
         state = f"{slug}:{user_id}:{secrets.token_urlsafe(16)}"
+        redis = get_async_redis()
+        await redis.setex(f"oauth_state:{state}", 600, "1")
         return connector.get_auth_url(state), state
 
     async def handle_callback(self, code: str, state: str) -> ConnectorInstance:
+        from app.common.redis_client import get_async_redis
+        redis = get_async_redis()
+        if not await redis.getdel(f"oauth_state:{state}"):
+            raise ValueError("Invalid or expired OAuth state")
+
         parts = state.split(":", 2)
         if len(parts) < 2:
             raise ValueError("Invalid OAuth state")
@@ -133,7 +153,7 @@ class ConnectorManager:
         instance = await self._db.get(ConnectorInstance, instance_id)
         if not instance or instance.user_id != user_id:
             raise NotFoundError("ConnectorInstance", str(instance_id))
-        instance.status = ConnectorStatusEnum.revoked
+        await self._db.delete(instance)
 
     async def get_decrypted_tokens(self, instance_id: UUID, user_id: UUID) -> dict:
         instance = await self._db.get(ConnectorInstance, instance_id)

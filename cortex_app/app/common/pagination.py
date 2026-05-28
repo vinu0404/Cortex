@@ -22,7 +22,8 @@ def encode_cursor(created_at: datetime, id: UUID) -> str:
 def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     import base64
     raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-    ts_str, id_str = raw.split(":", 1)
+    # rsplit so ISO timestamp colons don't split incorrectly; UUID has no colons
+    ts_str, id_str = raw.rsplit(":", 1)
     return datetime.fromisoformat(ts_str), UUID(id_str)
 
 

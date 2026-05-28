@@ -11,6 +11,8 @@ settings = get_settings()
 def _get_key() -> bytes:
     raw = settings.ENCRYPTION_KEY
     decoded = base64.urlsafe_b64decode(raw + "==")
+    if len(decoded) < 32:
+        raise ValueError("ENCRYPTION_KEY must decode to at least 32 bytes")
     return decoded[:32]
 
 
