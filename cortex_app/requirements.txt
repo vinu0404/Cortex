@@ -1,0 +1,55 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12
+
+# Database
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+argon2-cffi==23.1.0
+
+# Encryption
+cryptography==43.0.3
+
+# LLM
+litellm==1.53.5
+langfuse==2.57.2
+
+# Redis
+redis==5.2.1
+
+# HTTP client
+httpx==0.28.1
+
+# Retry
+tenacity==9.0.0
+
+# Task queue
+celery==5.4.0
+redbeat==2.3.0
+
+# Pydantic
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# Vector DB
+qdrant-client==1.12.1
+
+# Utilities
+python-dotenv==1.0.1
+passlib==1.7.4
+
+# OAuth
+requests-oauthlib==2.0.0
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
+
+# Dev
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+httpx==0.28.1
