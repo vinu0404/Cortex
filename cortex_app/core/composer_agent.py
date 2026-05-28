@@ -1,6 +1,7 @@
 import logging
 
 import litellm
+from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
     retry,
@@ -15,6 +16,19 @@ from core.schemas import AgentOutput, LongTermMemory, SuggestionsOutput
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+class ComposerArtifact(BaseModel):
+    type: str  # "mermaid" | "pdf" | "csv" | "code"
+    title: str
+    content: str
+    language: str | None = None  # for code artifacts
+    filename: str | None = None  # for pdf/csv downloads
+
+
+class ComposerOutput(BaseModel):
+    response: str
+    artifacts: list[ComposerArtifact] = Field(default_factory=list)
 
 
 def _is_retriable(exc: Exception) -> bool:
@@ -42,8 +56,8 @@ async def compose_response(
     api_key: str,
     conversation_id: str,
     persona: str | None = None,
-) -> tuple[str, list[str]]:
-    """Returns (response_text, suggested_questions)."""
+) -> tuple[str, list[ComposerArtifact], list[str]]:
+    """Returns (response_text, artifacts, suggested_questions)."""
     successful = {k: v for k, v in agent_outputs.items() if v.task_done and not v.error}
     failed = {k: v for k, v in agent_outputs.items() if v.error}
 
@@ -65,23 +79,61 @@ async def compose_response(
     response = await litellm.acompletion(
         model=model_id,
         messages=[{"role": "user", "content": prompt_text}],
+        response_format=ComposerOutput,
         api_key=api_key,
-        stream=False,
         metadata={
             "trace_name": "composer_agent",
             "trace_session_id": conversation_id,
             "tags": ["orchestration"],
         },
     )
-    response_text = response.choices[0].message.content or ""
+
+    result = ComposerOutput.model_validate_json(response.choices[0].message.content)
+
+    # Generate PDF content if there's a pdf artifact
+    artifacts = []
+    for artifact in result.artifacts:
+        if artifact.type == "pdf":
+            artifact = await _generate_pdf(artifact)
+        artifacts.append(artifact)
 
     suggestions: list[str] = []
     if settings.ENABLE_SUGGESTIONS:
         suggestions = await _generate_suggestions(
-            conversation_history, response_text, model_id, api_key, conversation_id
+            conversation_history, result.response, model_id, api_key, conversation_id
         )
 
-    return response_text, suggestions
+    return result.response, artifacts, suggestions
+
+
+async def _generate_pdf(artifact: ComposerArtifact) -> ComposerArtifact:
+    """Generate PDF bytes from text content, return as base64."""
+    try:
+        import base64
+        import io
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        for line in artifact.content.split("\n"):
+            if line.strip():
+                story.append(Paragraph(line, styles["Normal"]))
+                story.append(Spacer(1, 6))
+        doc.build(story)
+        pdf_b64 = base64.b64encode(buf.getvalue()).decode()
+        return ComposerArtifact(
+            type="pdf",
+            title=artifact.title,
+            content=pdf_b64,
+            filename=artifact.filename or f"{artifact.title.lower().replace(' ', '_')}.pdf",
+        )
+    except ImportError:
+        logger.warning("reportlab not installed — returning PDF as text")
+        return artifact
 
 
 async def _generate_suggestions(

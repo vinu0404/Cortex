@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # --- Environment ---
     ENVIRONMENT: Literal["dev", "prod"] = "dev"
 
+    # --- LLM ---
+    DEFAULT_MODEL: str = "gpt-4o"
+
     # --- Database ---
     DATABASE_URL: str = "postgresql+asyncpg://cortex:cortex@localhost:5432/cortex"
 

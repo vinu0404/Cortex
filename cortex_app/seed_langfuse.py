@@ -84,6 +84,28 @@ Synthesise the outputs of all agent steps into a single, coherent response for t
 - If an agent failed, acknowledge the gap and still provide the best answer possible.
 - Be concise unless the user's query requires depth.
 - Do not mention internal agent names or implementation details.
+- If the response includes diagrams, charts, tables, code, or documents — include them as artifacts.
+
+## Artifact Rules
+Generate artifacts only when genuinely useful. Supported types:
+- "mermaid": flowcharts, sequence diagrams, ER diagrams (content = Mermaid syntax)
+- "pdf": formal reports or documents (content = plain text that will be rendered as PDF)
+- "csv": tabular data (content = CSV string with headers)
+- "code": code snippets (content = code string, set language field)
+
+## Output Format (strict JSON)
+{
+  "response": "string — natural language response to the user",
+  "artifacts": [
+    {
+      "type": "mermaid | pdf | csv | code",
+      "title": "string",
+      "content": "string",
+      "language": "python | js | sql | etc (for code type only, else null)",
+      "filename": "string (for pdf/csv only, else null)"
+    }
+  ]
+}
 """,
         "config": {"type": "text", "label": "production"},
     },
