@@ -118,6 +118,18 @@ class Settings(BaseSettings):
     KB_MAX_FILES_PER_UPLOAD: int = 50
     KB_MAX_FILE_SIZE_MB: int = 100
 
+    # --- Website Collections ---
+    WC_MAX_URLS_PER_COLLECTION: int = 50
+    WC_MAX_DEPTH:               int = 5
+    WC_CRAWL_TIMEOUT_SECONDS:   int = 600
+    WC_MAX_PAGES_PER_URL:       int = 500
+    WC_CONCURRENT_REQUESTS:     int = 8
+    WC_DOWNLOAD_TIMEOUT:        int = 30
+    WC_OBEY_ROBOTS:             bool = True
+    WC_USER_AGENT:              str = "CortexBot/1.0"
+    WC_TOP_K_DENSE:             int = 50
+    WC_TOP_K_FINAL:             int = 5
+
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
