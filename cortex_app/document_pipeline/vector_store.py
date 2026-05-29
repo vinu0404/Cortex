@@ -60,7 +60,7 @@ async def create_text_index(kb_id: str) -> None:
         if "already exists" in msg or "400" in msg:
             pass
         else:
-            logger.warning("Failed to create text index for kb %s: %s", kb_id, e)
+            logger.error("Failed to create text index for kb %s: %s", kb_id, e)
             raise
     finally:
         await client.close()
@@ -107,7 +107,7 @@ async def delete_document_chunks(kb_id: str, doc_id: str) -> None:
             points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
         )
     except Exception:
-        logger.warning("Failed to delete chunks for doc %s from kb %s", doc_id, kb_id, exc_info=True)
+        logger.error("Failed to delete chunks for doc %s from kb %s", doc_id, kb_id, exc_info=True)
     finally:
         await client.close()
 
@@ -117,7 +117,7 @@ async def delete_collection(kb_id: str) -> None:
     try:
         await client.delete_collection(_collection_name(kb_id))
     except Exception:
-        logger.warning("Failed to delete Qdrant collection for kb %s", kb_id, exc_info=True)
+        logger.error("Failed to delete Qdrant collection for kb %s", kb_id, exc_info=True)
     finally:
         await client.close()
 
@@ -133,7 +133,7 @@ async def dense_search(kb_id: str, query_embedding: list[float], top_k: int) -> 
         )
         return [{"id": str(r.id), "score": r.score, "payload": r.payload} for r in results]
     except Exception:
-        logger.warning("Dense search failed for kb %s", kb_id, exc_info=True)
+        logger.error("Dense search failed for kb %s", kb_id, exc_info=True)
         return []
     finally:
         await client.close()
@@ -151,7 +151,7 @@ async def text_search(kb_id: str, query: str, top_k: int) -> list[dict]:
         )
         return [{"id": str(r.id), "score": 1.0, "payload": r.payload} for r in results]
     except Exception:
-        logger.warning("Text search failed for kb %s", kb_id, exc_info=True)
+        logger.error("Text search failed for kb %s", kb_id, exc_info=True)
         return []
     finally:
         await client.close()

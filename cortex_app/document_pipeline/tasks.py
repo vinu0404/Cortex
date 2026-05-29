@@ -28,7 +28,7 @@ def process_document_task(self, doc_id: str) -> None:
     try:
         asyncio.run(_run_device_pipeline(doc_id))
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "process_document_task retry: doc_id=%s attempt=%d err=%s",
             doc_id, self.request.retries + 1, exc,
         )
@@ -60,7 +60,7 @@ def ingest_from_s3_task(self, doc_id: str, s3_url: str, creds: dict) -> None:
     try:
         asyncio.run(_run_s3_pipeline(doc_id, s3_url, creds))
     except Exception as exc:
-        logger.warning("ingest_from_s3_task retry: doc_id=%s err=%s", doc_id, exc)
+        logger.error("ingest_from_s3_task retry: doc_id=%s err=%s", doc_id, exc)
         raise self.retry(exc=exc)
 
 
@@ -116,7 +116,7 @@ async def _run_device_pipeline(doc_id: str) -> None:
                 os.remove(staging_path)
                 shutil.rmtree(staging_dir, ignore_errors=True)
             except Exception:
-                logger.warning("Could not remove staging file: %s", staging_path)
+                logger.error("Could not remove staging file: %s", staging_path)
 
             doc.storage_key = storage_key
             doc.staging_path = None

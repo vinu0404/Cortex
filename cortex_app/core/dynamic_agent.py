@@ -77,7 +77,7 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
         props = {}
         required = []
         for param_name, param in sig.parameters.items():
-            if param_name in ("access_token", "instance_url", "kb_ids", "user_id"):
+            if param_name in ("access_token", "instance_url", "kb_ids", "user_id", "collection_ids"):
                 continue
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -196,6 +196,10 @@ async def _execute_tool_calls(
                 kb_tokens = connector_tokens_db.get("__kb__", {})
                 args["kb_ids"] = kb_tokens.get("kb_ids", [])
                 args["user_id"] = kb_tokens.get("user_id", "")
+            elif connector_slug == "__website__":
+                wc_tokens = connector_tokens_db.get("__website__", {})
+                args["collection_ids"] = wc_tokens.get("collection_ids", [])
+                args["user_id"] = wc_tokens.get("user_id", "")
             elif connector_slug and connector_slug in connector_tokens_db:
                 tokens = connector_tokens_db[connector_slug]
                 args["access_token"] = tokens.get("access_token", "")

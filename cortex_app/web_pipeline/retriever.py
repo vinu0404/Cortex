@@ -26,7 +26,7 @@ async def retrieve_multi(collection_ids: list[str], query_embedding: list[float]
     merged = []
     for res in per_coll:
         if isinstance(res, Exception):
-            logger.warning("WC retrieve failed for one collection: %s", res)
+            logger.error("WC retrieve failed for one collection: %s", res)
             continue
         merged.extend(res)
     merged.sort(key=lambda x: x["score"], reverse=True)

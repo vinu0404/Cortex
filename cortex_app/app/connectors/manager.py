@@ -88,7 +88,7 @@ class ConnectorManager:
         try:
             await self._db.flush()
         except IntegrityError as e:
-            logger.warning("Connector definition seed skipped (already exists): %s", e)
+            logger.error("Connector definition seed skipped (already exists): %s", e)
 
     async def list_definitions(self) -> list[ConnectorDefinition]:
         result = await self._db.scalars(
@@ -145,6 +145,7 @@ class ConnectorManager:
         try:
             await self._db.flush()
         except IntegrityError as e:
+            logger.error("Failed to create connector instance: %s", e)
             raise ConflictError("Connector already connected") from e
 
         return instance

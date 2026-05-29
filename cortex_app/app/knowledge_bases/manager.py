@@ -302,4 +302,4 @@ def _delete_b2_file(storage_key: str) -> None:
         from document_pipeline.storage import delete_file
         delete_file(storage_key)
     except Exception:
-        logger.warning("Failed to delete B2 file: %s", storage_key, exc_info=True)
+        logger.error("Failed to delete B2 file: %s", storage_key, exc_info=True)

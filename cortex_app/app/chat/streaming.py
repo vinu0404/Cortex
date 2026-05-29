@@ -377,8 +377,9 @@ async def _load_workspace_context(
     master_model = settings.DEFAULT_MODEL
     master_key = ""
 
-    # Load KB assignments for all agents in one query
+    # Load KB + website collection assignments for all agents in one query each
     from app.knowledge_bases.db_models import AgentKnowledgeBase
+    from app.website_collections.db_models import AgentWebsiteCollection
     agent_ids = [a.id for a in agents]
     kb_rows = list(await db.scalars(
         select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
@@ -386,6 +387,13 @@ async def _load_workspace_context(
     kb_map: dict = {}
     for row in kb_rows:
         kb_map.setdefault(row.agent_id, []).append(str(row.kb_id))
+
+    wc_rows = list(await db.scalars(
+        select(AgentWebsiteCollection).where(AgentWebsiteCollection.agent_id.in_(agent_ids))
+    )) if agent_ids else []
+    wc_map: dict = {}
+    for row in wc_rows:
+        wc_map.setdefault(row.agent_id, []).append(str(row.collection_id))
 
     for agent in agents:
         agents_db[agent.name] = {
@@ -396,13 +404,14 @@ async def _load_workspace_context(
             "tools_config": agent.tools_config or [],
             "agent_type": agent.agent_type.value,
             "kb_ids": kb_map.get(agent.id, []),
+            "collection_ids": wc_map.get(agent.id, []),
         }
         if agent.api_key_id and agent.api_key_id not in api_keys_db:
             try:
                 api_keys_db[agent.api_key_id] = await _fetch_api_key(key_mgr, agent.api_key_id, user_id)
             except _KEY_LOAD_EXCEPTIONS as e:
                 # Key unreadable after retries — agent will run keyless (logged, non-fatal)
-                logger.warning(
+                logger.error(
                     "Key %s for agent '%s' unreadable (%s) — agent will run without key",
                     agent.api_key_id, agent.name, type(e).__name__,
                 )
@@ -419,7 +428,7 @@ async def _load_workspace_context(
             connector_tokens_db[inst.definition.slug] = decrypt_json(inst.encrypted_tokens)
         except (InvalidTag, ValueError) as e:
             # Corrupted/wrong-key token — log and skip this connector
-            logger.warning(
+            logger.error(
                 "Connector '%s' tokens undecryptable (%s) — tools for this connector unavailable",
                 inst.definition.slug, type(e).__name__,
             )

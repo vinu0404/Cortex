@@ -113,6 +113,9 @@ app.include_router(admin_router, prefix="/admin", tags=["admin"])
 from app.knowledge_bases.controller import router as knowledge_bases_router
 app.include_router(knowledge_bases_router, tags=["knowledge-bases"])
 
+from app.website_collections.controller import router as website_collections_router
+app.include_router(website_collections_router, tags=["website-collections"])
+
 
 # ---- Health & Frontend ----
 @app.get("/health")
@@ -149,3 +152,8 @@ async def serve_dashboard():
 @app.get("/knowledge-bases.html")
 async def serve_knowledge_bases():
     return FileResponse("frontend/knowledge-bases.html")
+
+
+@app.get("/website-collections.html")
+async def serve_website_collections():
+    return FileResponse("frontend/website-collections.html")

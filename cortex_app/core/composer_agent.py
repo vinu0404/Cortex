@@ -140,7 +140,7 @@ async def _generate_pdf(artifact: ComposerArtifact) -> ComposerArtifact:
             filename=artifact.filename or f"{artifact.title.lower().replace(' ', '_')}.pdf",
         )
     except ImportError:
-        logger.warning("reportlab not installed — returning PDF as text")
+        logger.error("reportlab not installed — returning PDF as text")
         return artifact
 
 
@@ -167,5 +167,5 @@ async def _generate_suggestions(
         result = SuggestionsOutput.model_validate_json(resp.choices[0].message.content)
         return result.questions
     except Exception as e:
-        logger.warning("Suggestion generation failed: %s", e)
+        logger.error("Suggestion generation failed: %s", e)
         return []

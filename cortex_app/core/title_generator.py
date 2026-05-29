@@ -24,7 +24,7 @@ def schedule_title_generation(
     task = asyncio.create_task(
         _generate_title(query, response, conversation_id, model_id, api_key, db_updater)
     )
-    task.add_done_callback(lambda t: logger.warning("Title gen failed: %s", t.exception()) if t.exception() else None)
+    task.add_done_callback(lambda t: logger.error("Title gen failed: %s", t.exception()) if t.exception() else None)
 
 
 async def _generate_title(
@@ -50,4 +50,4 @@ async def _generate_title(
         result = TitleGenerationOutput.model_validate_json(resp.choices[0].message.content)
         await db_updater(conversation_id, result.title)
     except Exception as e:
-        logger.warning("Title generation failed for %s: %s", conversation_id, e)
+        logger.error("Title generation failed for %s: %s", conversation_id, e)

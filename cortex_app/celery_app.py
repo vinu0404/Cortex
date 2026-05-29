@@ -7,7 +7,7 @@ celery_app = Celery(
     "cortex",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_BROKER_URL,
-    include=["document_pipeline.tasks"],
+    include=["document_pipeline.tasks", "web_pipeline.tasks"],
 )
 
 celery_app.conf.update(

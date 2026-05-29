@@ -113,4 +113,4 @@ def delete_file(storage_key: str) -> None:
         client = _get_client()
         client.delete_object(Bucket=settings.B2_BUCKET, Key=storage_key)
     except Exception:
-        logger.warning("Failed to delete B2 file: %s", storage_key, exc_info=True)
+        logger.error("Failed to delete B2 file: %s", storage_key, exc_info=True)

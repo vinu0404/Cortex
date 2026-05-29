@@ -58,9 +58,10 @@ def crawl_website_task(self, url_id: str) -> None:
         asyncio.run(_run_crawl_pipeline(url_id))
     except ValueError:
         # ValueError = non-retriable (missing record, login_required, etc.)
+        logger.error("crawl_website_task failed with non-retriable error: url_id=%s err=%s", url_id, exc_info=True)
         raise
     except Exception as exc:
-        logger.warning("crawl_website_task retry: url_id=%s err=%s", url_id, exc)
+        logger.error("crawl_website_task retry: url_id=%s err=%s", url_id, exc)
         raise self.retry(exc=exc)
 
 

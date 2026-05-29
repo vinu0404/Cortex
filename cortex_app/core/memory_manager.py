@@ -82,7 +82,7 @@ def schedule_long_term_memory(
 
 def _log_task_error(task: asyncio.Task) -> None:
     if task.exception():
-        logger.warning("Long-term memory task failed: %s", task.exception())
+        logger.error("Long-term memory task failed: %s", task.exception())
 
 
 async def _evaluate_long_term(

@@ -54,7 +54,7 @@ class ToolRegistry:
                             self._tools[attr_name] = obj
                             logger.debug("Registered tool: %s", attr_name)
                 except Exception as e:
-                    logger.warning("Failed to load tools from %s: %s", mod_name, e)
+                    logger.error("Failed to load tools from %s: %s", mod_name, e)
         self._discovered = True
         logger.info("Registered %d tools", len(self._tools))
 

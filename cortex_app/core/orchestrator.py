@@ -115,7 +115,7 @@ async def _run_agent(
         if dep_id in shared_state:
             dep_data = shared_state[dep_id].data
             if dep_data is None:
-                logger.warning("Upstream agent %s produced no data; task %s may be incomplete", dep_id, task.agent_id)
+                logger.error("Upstream agent %s produced no data; task %s may be incomplete", dep_id, task.agent_id)
             dependency_outputs[dep_id] = dep_data
 
     hitl_context = await _check_hitl(task, agent_def, on_hitl_needed)
@@ -141,8 +141,9 @@ async def _run_agent(
     raw_key = context.api_keys_db.get(api_key_id, "") if api_key_id else ""
     model_id = agent_def.get("model_id") or settings.DEFAULT_MODEL
 
-    # Build per-agent connector_tokens with __kb__ injection if agent has KBs
+    # Build per-agent connector_tokens with __kb__ and __website__ injection
     kb_ids = agent_def.get("kb_ids", [])
+    collection_ids = agent_def.get("collection_ids", [])
     per_agent_tokens = dict(context.connector_tokens_db)
     if kb_ids:
         per_agent_tokens["__kb__"] = {
@@ -152,6 +153,16 @@ async def _run_agent(
         if "knowledge_base_search" not in agent_input.tools:
             agent_input = agent_input.model_copy(
                 update={"tools": list(agent_input.tools) + ["knowledge_base_search"]}
+            )
+
+    if collection_ids:
+        per_agent_tokens["__website__"] = {
+            "collection_ids": [str(c) for c in collection_ids],
+            "user_id": str(context.user_id),
+        }
+        if "collection_search" not in agent_input.tools:
+            agent_input = agent_input.model_copy(
+                update={"tools": list(agent_input.tools) + ["collection_search"]}
             )
 
     start = time.monotonic()

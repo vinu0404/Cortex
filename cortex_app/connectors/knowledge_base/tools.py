@@ -59,7 +59,7 @@ async def knowledge_base_search(
     merged: list[dict] = []
     for result in per_kb_results:
         if isinstance(result, Exception):
-            logger.warning("KB search failed for one KB: %s", result)
+            logger.error("KB search failed for one KB: %s", result)
             continue
         merged.extend(result)
 

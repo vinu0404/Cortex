@@ -37,10 +37,10 @@ def _rerank_cross_encoder(query: str, candidates: list[dict], top_k: int) -> lis
             candidate["rerank_score"] = float(score)
         return sorted(candidates, key=lambda x: x.get("rerank_score", 0), reverse=True)[:top_k]
     except ImportError:
-        logger.warning("sentence-transformers not installed; falling back to RRF order")
+        logger.error("sentence-transformers not installed; falling back to RRF order")
         return candidates[:top_k]
     except Exception:
-        logger.warning("Cross-encoder reranking failed; falling back to RRF order", exc_info=True)
+        logger.error("Cross-encoder reranking failed; falling back to RRF order", exc_info=True)
         return candidates[:top_k]
 
 
@@ -63,6 +63,7 @@ async def _rerank_llm(query: str, candidates: list[dict], api_key: str, top_k: i
             score_data = json.loads(response.choices[0].message.content)
             candidate["rerank_score"] = score_data.get("score", 0)
         except Exception:
+            logger.error("LLM reranking failed for candidate: %s", candidate.get("id"), exc_info=True)
             candidate["rerank_score"] = 0
         scored.append(candidate)
     return sorted(scored, key=lambda x: x.get("rerank_score", 0), reverse=True)[:top_k]
