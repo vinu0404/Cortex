@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import json
 import logging
 from uuid import UUID
@@ -25,6 +27,7 @@ from app.common.exceptions import AppError
 from app.common.pagination import build_cursor_page, decode_cursor, encode_cursor
 from app.common.redis_client import get_async_redis
 from database.session import get_db, get_custom_db_context_session
+from document_pipeline.storage import build_artifact_storage_key, generate_presigned_url, upload_bytes
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -77,9 +80,6 @@ async def get_messages(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        import asyncio
-        from document_pipeline.storage import generate_presigned_url
-
         cursor_created_at, cursor_id = decode_cursor(cursor) if cursor else (None, None)
         chat_mgr = ChatManager(db)
         messages, has_more = await chat_mgr.get_messages(
@@ -89,14 +89,22 @@ async def get_messages(
         artifact_map = await chat_mgr.get_artifacts_for_messages([m.id for m in messages])
 
         loop = asyncio.get_running_loop()
+        # Flatten all artifacts, generate all presigned URLs in parallel, then reassemble
+        flat_artifacts = [(m.id, a) for m in messages for a in artifact_map.get(m.id, [])]
+        urls = await asyncio.gather(*[
+            loop.run_in_executor(None, generate_presigned_url, a.storage_key)
+            for _, a in flat_artifacts
+        ])
+        url_map: dict[UUID, list[SavedArtifactResponse]] = {}
+        for (msg_id, a), url in zip(flat_artifacts, urls):
+            url_map.setdefault(msg_id, []).append(
+                SavedArtifactResponse(id=a.id, type=a.type, title=a.title, filename=a.filename, url=url)
+            )
+
         result = []
         for m in messages:
-            saved = []
-            for a in artifact_map.get(m.id, []):
-                url = await loop.run_in_executor(None, generate_presigned_url, a.storage_key)
-                saved.append(SavedArtifactResponse(id=a.id, type=a.type, title=a.title, filename=a.filename, url=url))
             resp = MessageResponse.model_validate(m)
-            resp.saved_artifacts = saved
+            resp.saved_artifacts = url_map.get(m.id, [])
             result.append(resp.model_dump(mode="json"))
 
         prev_cursor = encode_cursor(messages[0].created_at, messages[0].id) if has_more and messages else None
@@ -112,14 +120,15 @@ async def save_artifact(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        import asyncio
-        import base64
-        from document_pipeline.storage import build_artifact_storage_key, upload_bytes, generate_presigned_url
-        from app.common.exceptions import ForbiddenError
-
-        # Verify conversation belongs to user
         chat_mgr = ChatManager(db)
         await chat_mgr.get_conversation(body.conversation_id, current_user.id)
+
+        # Return existing artifact if already saved (two-tab race guard)
+        existing = await chat_mgr.get_artifact_by_message_and_type(body.message_id, body.type)
+        if existing:
+            loop = asyncio.get_running_loop()
+            url = await loop.run_in_executor(None, generate_presigned_url, existing.storage_key)
+            return ok(ArtifactSaveResponse(id=existing.id, url=url).model_dump(mode="json"))
 
         filename = body.filename
         if body.type == "pdf":

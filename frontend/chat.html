@@ -175,6 +175,7 @@
   function switchWorkspace() {
     wsId = document.getElementById('ws-selector').value;
     convId = null;
+    prevCursor = null; hasMoreMessages = false; loadingMore = false;
     document.getElementById('messages').innerHTML = '';
     document.getElementById('conv-list').innerHTML = '';
     loadConversations();
@@ -302,7 +303,11 @@
       title.textContent = '📄 ' + artifact.title;
       const pre = document.createElement('pre');
       pre.style.cssText = 'font-size:11px; background:var(--surface); padding:8px; border-radius:4px; overflow-x:auto; border:1px solid var(--border);';
-      pre.textContent = artifact.content;
+      const csvLines = artifact.content.split('\n');
+      const PREVIEW_ROWS = 20;
+      pre.textContent = csvLines.length > PREVIEW_ROWS
+        ? csvLines.slice(0, PREVIEW_ROWS).join('\n') + `\n… ${csvLines.length - PREVIEW_ROWS} more rows`
+        : artifact.content;
       const btn = document.createElement('a');
       btn.className = 'btn btn-secondary btn-sm';
       btn.style.marginTop = '6px';

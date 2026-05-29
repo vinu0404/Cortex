@@ -2,7 +2,7 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,3 +84,59 @@ async def logout(
 @router.get("/me", response_model=None)
 async def me(current_user: User = Depends(get_current_user)) -> JSONResponse:
     return ok(UserResponse.model_validate(current_user).model_dump(mode="json"))
+
+
+@router.get("/me/stats", response_model=None)
+async def get_my_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    from sqlalchemy import func, select
+    from app.agents.db_models import Agent
+    from app.chat.db_models import Conversation, Message
+    from app.connectors.db_models import ConnectorInstance
+    from app.knowledge_bases.db_models import KnowledgeBase
+    from app.website_collections.db_models import WebsiteCollection
+    from app.workspaces.db_models import Workspace
+
+    uid = current_user.id
+    ws_count    = await db.scalar(select(func.count()).select_from(Workspace).where(Workspace.user_id == uid, Workspace.deleted_at.is_(None)))
+    agent_count = await db.scalar(select(func.count(Agent.id)).join(Workspace, Agent.workspace_id == Workspace.id).where(Workspace.user_id == uid, Workspace.deleted_at.is_(None)))
+    conv_count  = await db.scalar(select(func.count()).select_from(Conversation).where(Conversation.user_id == uid))
+    msg_count   = await db.scalar(select(func.count()).select_from(Message).join(Conversation, Message.conversation_id == Conversation.id).where(Conversation.user_id == uid))
+    total_cost  = await db.scalar(select(func.sum(Message.total_cost_usd)).join(Conversation, Message.conversation_id == Conversation.id).where(Conversation.user_id == uid))
+    kb_count    = await db.scalar(select(func.count()).select_from(KnowledgeBase).where(KnowledgeBase.user_id == uid))
+    wc_count    = await db.scalar(select(func.count()).select_from(WebsiteCollection).where(WebsiteCollection.user_id == uid))
+    conn_count  = await db.scalar(select(func.count()).select_from(ConnectorInstance).where(ConnectorInstance.user_id == uid))
+
+    return ok({
+        "workspaces": ws_count or 0,
+        "agents": agent_count or 0,
+        "conversations": conv_count or 0,
+        "messages": msg_count or 0,
+        "total_cost_usd": round(total_cost or 0.0, 4),
+        "knowledge_bases": kb_count or 0,
+        "website_collections": wc_count or 0,
+        "active_connectors": conn_count or 0,
+    })
+
+
+@router.get("/me/recent-conversations", response_model=None)
+async def get_recent_conversations(
+    limit: int = Query(10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    from sqlalchemy import select
+    from app.chat.db_models import Conversation
+
+    rows = list(await db.scalars(
+        select(Conversation)
+        .where(Conversation.user_id == current_user.id)
+        .order_by(Conversation.created_at.desc())
+        .limit(limit)
+    ))
+    return ok([{
+        "id": str(c.id), "title": c.title,
+        "workspace_id": str(c.workspace_id), "created_at": c.created_at.isoformat(),
+    } for c in rows])

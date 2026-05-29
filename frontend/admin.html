@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .tab-btn { padding:6px 14px; border-radius:6px; font-size:12px; font-weight:500; cursor:pointer; border:1px solid var(--border); background:var(--bg); color:var(--text-muted); transition:all 0.15s; }
+    .tab-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .tab-btn:hover:not(.active) { background:var(--surface); }
+    .data-table { width:100%; border-collapse:collapse; font-size:12px; }
+    .data-table th { text-align:left; padding:8px 12px; background:var(--surface); border-bottom:2px solid var(--border); font-weight:600; color:var(--text-muted); white-space:nowrap; }
+    .data-table td { padding:7px 12px; border-bottom:1px solid var(--border); vertical-align:middle; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .data-table tr:hover td { background:var(--surface); }
+    .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 20px; }
+    .badge-role { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+    .badge-admin { background:#ede9fe; color:#7c3aed; }
+    .badge-user { background:#e0f2fe; color:#0369a1; }
+    .badge-active { padding:2px 8px; border-radius:10px; font-size:11px; background:#dcfce7; color:#166534; }
+    .badge-inactive { padding:2px 8px; border-radius:10px; font-size:11px; background:#fee2e2; color:#991b1b; }
+  </style>
+</head>
+<body>
+<div style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
+
+  <!-- Top bar -->
+  <div style="border-bottom:1px solid var(--border); padding:12px 20px; display:flex; align-items:center; gap:12px; flex-shrink:0;">
+    <a href="/dashboard.html" class="btn btn-secondary btn-sm">← Dashboard</a>
+    <h1 style="font-size:16px; font-weight:700; margin:0;">Cortex Admin</h1>
+    <div style="margin-left:auto; font-size:12px; color:var(--text-muted);" id="admin-user"></div>
+  </div>
+
+  <!-- Stats row -->
+  <div id="stats-row" style="display:flex; gap:12px; padding:14px 20px; border-bottom:1px solid var(--border); flex-shrink:0; flex-wrap:wrap;"></div>
+
+  <!-- Tab bar -->
+  <div style="padding:10px 20px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0;" id="tab-bar"></div>
+
+  <!-- Table area -->
+  <div style="flex:1; overflow:auto; padding:16px 20px;">
+    <div id="table-container"></div>
+    <div style="padding:12px 0; display:flex; gap:8px; align-items:center;">
+      <button id="load-more-btn" class="btn btn-secondary btn-sm hidden" onclick="loadMore()">Load More</button>
+      <span id="row-count" style="font-size:12px; color:var(--text-muted);"></span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+
+  const TAB_CONFIG = {
+    users:                   { label: 'Users',             endpoint: 'admin/users',                    cursor: true,  cols: ['id','email','role','is_active','created_at'], actions: true },
+    workspaces:              { label: 'Workspaces',        endpoint: 'admin/workspaces',               cursor: true,  cols: ['id','user_id','name','created_at'] },
+    agents:                  { label: 'Agents',            endpoint: 'admin/agents',                   cursor: true,  cols: ['id','workspace_id','name','agent_type','model_id','deleted_at','created_at'] },
+    personas:                { label: 'Personas',          endpoint: 'admin/personas',                 cursor: true,  cols: ['id','user_id','name','created_at'] },
+    conversations:           { label: 'Conversations',     endpoint: 'admin/conversations',            cursor: true,  cols: ['id','user_id','workspace_id','title','created_at'] },
+    messages:                { label: 'Messages',          endpoint: 'admin/messages',                 cursor: true,  cols: ['id','conversation_id','role','content','total_cost_usd','latency_ms','created_at'] },
+    conversation_summaries:  { label: 'Conv Summaries',    endpoint: 'admin/conversation-summaries',   cursor: true,  cols: ['id','conversation_id','message_range_start','message_range_end','created_at'] },
+    hitl_requests:           { label: 'HITL Requests',     endpoint: 'admin/hitl-requests',            cursor: true,  cols: ['id','conversation_id','agent_id','tool_names','status','expires_at','created_at'] },
+    message_artifacts:       { label: 'Artifacts',         endpoint: 'admin/message-artifacts',        cursor: true,  cols: ['id','message_id','user_id','type','title','filename','created_at'] },
+    knowledge_bases:         { label: 'Knowledge Bases',   endpoint: 'admin/knowledge-bases',          cursor: true,  cols: ['id','user_id','name','document_count','created_at'] },
+    kb_documents:            { label: 'KB Documents',      endpoint: 'admin/kb-documents',             cursor: true,  cols: ['id','kb_id','user_id','filename','processing_status','chunk_count','created_at'] },
+    website_collections:     { label: 'Web Collections',   endpoint: 'admin/website-collections',      cursor: true,  cols: ['id','user_id','name','url_count','created_at'] },
+    website_urls:            { label: 'Web URLs',           endpoint: 'admin/website-urls',             cursor: true,  cols: ['id','collection_id','url','crawl_status','page_count','chunk_count','created_at'] },
+    connector_definitions:   { label: 'Connector Defs',    endpoint: 'admin/connector-definitions',    cursor: true,  cols: ['id','slug','display_name','auth_type','is_active','created_at'] },
+    connector_instances:     { label: 'Connectors',        endpoint: 'admin/connector-instances',      cursor: true,  cols: ['id','user_id','definition_id','account_label','status','token_expires_at','created_at'] },
+    api_keys:                { label: 'API Keys',           endpoint: 'admin/api-keys',                 cursor: true,  cols: ['id','user_id','key_name','provider','created_at'] },
+    long_term_memory:        { label: 'LTM',               endpoint: 'admin/long-term-memory',         cursor: true,  cols: ['id','user_id','critical_facts','preferences','updated_at'] },
+    refresh_tokens:          { label: 'Refresh Tokens',    endpoint: 'admin/refresh-tokens',           cursor: true,  cols: ['id','user_id','expires_at','revoked_at','created_at'] },
+    agent_kbs:               { label: 'Agent↔KBs',        endpoint: 'admin/agent-kbs',                cursor: false, cols: ['agent_id','kb_id'] },
+    agent_personas:          { label: 'Agent↔Personas',   endpoint: 'admin/agent-personas',           cursor: false, cols: ['agent_id','persona_id'] },
+    agent_wcs:               { label: 'Agent↔WebCols',    endpoint: 'admin/agent-website-collections', cursor: false, cols: ['agent_id','collection_id'] },
+  };
+
+  let activeTab = 'users';
+  let nextCursor = null;
+  let allRows = [];
+
+  async function init() {
+    const me = await apiGet('auth/me');
+    if (!me || me.role !== 'admin') {
+      location.href = '/index.html';
+      return;
+    }
+    document.getElementById('admin-user').textContent = me.email;
+    buildTabs();
+    await loadStats();
+    await switchTab('users');
+  }
+
+  function buildTabs() {
+    const bar = document.getElementById('tab-bar');
+    Object.entries(TAB_CONFIG).forEach(([key, cfg]) => {
+      const btn = document.createElement('button');
+      btn.className = 'tab-btn' + (key === activeTab ? ' active' : '');
+      btn.textContent = cfg.label;
+      btn.id = `tab-${key}`;
+      btn.onclick = () => switchTab(key);
+      bar.appendChild(btn);
+    });
+  }
+
+  async function loadStats() {
+    const data = await apiGet('admin/stats');
+    if (!data) return;
+    const cards = [
+      { label: 'Users', value: data.total_users },
+      { label: 'Workspaces', value: data.total_workspaces },
+      { label: 'Conversations', value: data.total_conversations },
+      { label: 'Messages', value: data.total_messages },
+    ];
+    const row = document.getElementById('stats-row');
+    cards.forEach(c => {
+      const div = document.createElement('div');
+      div.className = 'stat-card';
+      div.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:2px;">${c.label}</div><div style="font-size:22px;font-weight:700;">${c.value ?? '-'}</div>`;
+      row.appendChild(div);
+    });
+  }
+
+  async function switchTab(key) {
+    activeTab = key;
+    nextCursor = null;
+    allRows = [];
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(`tab-${key}`)?.classList.add('active');
+    document.getElementById('table-container').innerHTML = '';
+    document.getElementById('load-more-btn').classList.add('hidden');
+    document.getElementById('row-count').textContent = '';
+    await fetchRows();
+  }
+
+  async function fetchRows() {
+    const cfg = TAB_CONFIG[activeTab];
+    const qs = cfg.cursor && nextCursor ? `?cursor=${encodeURIComponent(nextCursor)}&limit=50` : (cfg.cursor ? '?limit=50' : '?limit=500');
+    const data = await apiGet(`${cfg.endpoint}${qs}`);
+    if (!data) return;
+    const items = data.items || data;
+    allRows = allRows.concat(items);
+    nextCursor = data.next_cursor || null;
+    renderTable(items, cfg.cols, cfg.actions, allRows.length === items.length);
+    document.getElementById('row-count').textContent = `${allRows.length} row${allRows.length !== 1 ? 's' : ''}`;
+    const loadMoreBtn = document.getElementById('load-more-btn');
+    if (cfg.cursor && data.has_next) {
+      loadMoreBtn.classList.remove('hidden');
+    } else {
+      loadMoreBtn.classList.add('hidden');
+    }
+  }
+
+  async function loadMore() {
+    await fetchRows();
+  }
+
+  function renderTable(rows, cols, hasActions, isFirst) {
+    const container = document.getElementById('table-container');
+    if (isFirst) {
+      if (!rows.length) {
+        container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No records found.</div>';
+        return;
+      }
+      const table = document.createElement('table');
+      table.className = 'data-table';
+      const thead = document.createElement('thead');
+      const hrow = document.createElement('tr');
+      cols.forEach(c => {
+        const th = document.createElement('th');
+        th.textContent = c.replace(/_/g, ' ');
+        hrow.appendChild(th);
+      });
+      if (hasActions) {
+        const th = document.createElement('th');
+        th.textContent = 'Actions';
+        hrow.appendChild(th);
+      }
+      thead.appendChild(hrow);
+      table.appendChild(thead);
+      table.id = 'main-table';
+      const tbody = document.createElement('tbody');
+      tbody.id = 'main-tbody';
+      table.appendChild(tbody);
+      container.innerHTML = '';
+      container.appendChild(table);
+    }
+    const tbody = document.getElementById('main-tbody');
+    rows.forEach(row => {
+      const tr = document.createElement('tr');
+      cols.forEach(col => {
+        const td = document.createElement('td');
+        const val = row[col];
+        if (col === 'role') {
+          td.innerHTML = `<span class="badge-role badge-${val}">${val}</span>`;
+        } else if (col === 'is_active') {
+          td.innerHTML = val ? '<span class="badge-active">active</span>' : '<span class="badge-inactive">inactive</span>';
+        } else if (col === 'tool_names' && Array.isArray(val)) {
+          td.textContent = val.join(', ');
+        } else {
+          td.textContent = val == null ? '—' : String(val);
+        }
+        td.title = val == null ? '' : String(val);
+        tr.appendChild(td);
+      });
+      if (hasActions) {
+        const td = document.createElement('td');
+        td.style.whiteSpace = 'nowrap';
+
+        const toggleRoleBtn = document.createElement('button');
+        toggleRoleBtn.className = 'btn btn-secondary btn-sm';
+        toggleRoleBtn.style.marginRight = '4px';
+        toggleRoleBtn.textContent = row.role === 'admin' ? '→ User' : '→ Admin';
+        toggleRoleBtn.onclick = async () => {
+          const newRole = row.role === 'admin' ? 'user' : 'admin';
+          await apiPatch(`admin/users/${row.id}`, { role: newRole });
+          await switchTab(activeTab);
+        };
+
+        const toggleActiveBtn = document.createElement('button');
+        toggleActiveBtn.className = row.is_active ? 'btn btn-danger btn-sm' : 'btn btn-primary btn-sm';
+        toggleActiveBtn.textContent = row.is_active ? 'Deactivate' : 'Activate';
+        toggleActiveBtn.onclick = async () => {
+          await apiPatch(`admin/users/${row.id}`, { is_active: !row.is_active });
+          await switchTab(activeTab);
+        };
+
+        td.appendChild(toggleRoleBtn);
+        td.appendChild(toggleActiveBtn);
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    });
+  }
+
+  init();
+</script>
+</body>
+</html>

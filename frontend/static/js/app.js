@@ -94,6 +94,12 @@ async function apiPut(path, body) {
   return _parseApiResponse(resp);
 }
 
+async function apiPatch(path, body) {
+  const resp = await apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) });
+  if (!resp) return null;
+  return _parseApiResponse(resp);
+}
+
 async function apiDelete(path) {
   const resp = await apiFetch(path, { method: 'DELETE' });
   if (!resp) return null;

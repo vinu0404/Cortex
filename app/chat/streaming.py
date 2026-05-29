@@ -426,15 +426,27 @@ async def _load_workspace_context(
     # Load OAuth tokens for connector tool injection
     connector_tokens_db: dict[str, dict] = {}
     instances = await _fetch_connector_instances(user_id, db)
+    _REFRESH_BEFORE_SECONDS = 120
     for inst in instances:
         try:
             connector_tokens_db[inst.definition.slug] = decrypt_json(inst.encrypted_tokens)
         except (InvalidTag, ValueError) as e:
-            # Corrupted/wrong-key token — log and skip this connector
             logger.error(
                 "Connector '%s' tokens undecryptable (%s) — tools for this connector unavailable",
                 inst.definition.slug, type(e).__name__,
             )
+            continue
+        # Refresh token if expiring within 2 minutes
+        if (
+            inst.token_expires_at
+            and inst.token_expires_at < datetime.now(timezone.utc) + timedelta(seconds=_REFRESH_BEFORE_SECONDS)
+        ):
+            try:
+                from app.connectors.manager import ConnectorManager
+                new_tokens = await ConnectorManager(db).refresh_connector_tokens(inst)
+                connector_tokens_db[inst.definition.slug] = new_tokens
+            except Exception as e:
+                logger.warning("Token refresh failed for connector '%s': %s", inst.definition.slug, e)
 
     return agents_db, api_keys_db, master_model, master_key, connector_tokens_db
 

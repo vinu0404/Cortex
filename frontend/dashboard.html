@@ -6,6 +6,13 @@
   <title>Cortex — Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px 20px; }
+    .stat-card .val { font-size:28px; font-weight:700; letter-spacing:-1px; }
+    .stat-card .lbl { color:var(--text-muted); font-size:12px; margin-top:2px; }
+    .section-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px; }
+    .conn-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:14px; font-size:12px; background:var(--surface); border:1px solid var(--border); }
+  </style>
 </head>
 <body>
 
@@ -15,44 +22,48 @@
     <span style="color:var(--border);">|</span>
     <span style="font-weight:600; font-size:15px;">Dashboard</span>
   </div>
-  <div style="display:flex; gap:8px;">
-    <button id="user-tab" onclick="switchView('user')" class="btn btn-primary btn-sm">My Stats</button>
-    <button id="admin-tab" onclick="switchView('admin')" class="btn btn-secondary btn-sm hidden">Admin</button>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
+    <a id="admin-link" href="/admin.html" class="btn btn-secondary btn-sm hidden">Admin Panel</a>
   </div>
 </nav>
 
-<main style="max-width:1100px; margin:0 auto; padding:32px 24px;">
+<main style="max-width:1100px; margin:0 auto; padding:28px 24px;">
 
-  <!-- User stats -->
-  <div id="user-view">
-    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:16px; margin-bottom:32px;" id="stat-cards"></div>
+  <!-- Stat cards row -->
+  <div id="stat-cards" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:12px; margin-bottom:28px;"></div>
 
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
-      <div>
-        <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">My Workspaces</h3>
-        <div id="my-workspaces"></div>
-      </div>
-      <div>
-        <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">Personas</h3>
-        <div id="personas-section">
-          <div style="display:flex; gap:8px; margin-bottom:12px;">
-            <button onclick="showModal('modal-persona')" class="btn btn-secondary btn-sm">+ Add Persona</button>
-          </div>
-          <div id="personas-list"></div>
-        </div>
-      </div>
+  <!-- Middle row: recent convs + connectors -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;">
+
+    <!-- Recent Conversations -->
+    <div class="section-card">
+      <h3 style="font-size:14px; font-weight:600; margin-bottom:12px;">Recent Conversations</h3>
+      <div id="recent-convs"></div>
+    </div>
+
+    <!-- Active Connectors -->
+    <div class="section-card">
+      <h3 style="font-size:14px; font-weight:600; margin-bottom:12px;">Connected Services</h3>
+      <div id="connectors-section"></div>
     </div>
   </div>
 
-  <!-- Admin view -->
-  <div id="admin-view" class="hidden">
-    <h2 style="font-size:18px; font-weight:700; margin-bottom:24px;">Admin Overview</h2>
-    <div id="admin-stats" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:16px; margin-bottom:32px;"></div>
-    <div>
-      <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">All Users</h3>
-      <div id="admin-users-table"></div>
-    </div>
+  <!-- Workspaces -->
+  <div style="margin-bottom:28px;">
+    <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">My Workspaces</h3>
+    <div id="my-workspaces"></div>
   </div>
+
+  <!-- Personas -->
+  <div>
+    <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">Personas</h3>
+    <div style="margin-bottom:10px;">
+      <button onclick="showModal('modal-persona')" class="btn btn-secondary btn-sm">+ Add Persona</button>
+    </div>
+    <div id="personas-list"></div>
+  </div>
+
 </main>
 
 <!-- Persona Modal -->
@@ -86,35 +97,81 @@
 <script src="/static/js/app.js"></script>
 <script>
   requireAuth();
-  let isAdmin = false;
 
   async function init() {
-    const user = await apiGet('auth/me');
-    isAdmin = user.role === 'admin';
-    if (isAdmin) document.getElementById('admin-tab').classList.remove('hidden');
-    await loadUserView();
-  }
-
-  async function loadUserView() {
-    const [workspaces, personas] = await Promise.all([
+    const [user, stats, recentConvs, connectors, workspaces, personas] = await Promise.all([
+      apiGet('auth/me'),
+      apiGet('auth/me/stats'),
+      apiGet('auth/me/recent-conversations?limit=8'),
+      apiGet('connectors/instances'),
       apiGet('workspaces?limit=50'),
       apiGet('personas'),
     ]);
 
-    // Stat cards
+    document.getElementById('user-email').textContent = user?.email || '';
+    if (user?.role === 'admin') {
+      document.getElementById('admin-link').classList.remove('hidden');
+    }
+
+    renderStats(stats);
+    renderRecentConvs(recentConvs || [], workspaces?.items || []);
+    renderConnectors(connectors || []);
+    renderWorkspaces(workspaces?.items || []);
+    renderPersonasList(personas || []);
+  }
+
+  function renderStats(s) {
     const cards = [
-      { label: 'Workspaces', value: workspaces?.items?.length || 0 },
-      { label: 'Conversations', value: '—' },
-      { label: 'Personas', value: (personas || []).length },
+      { label: 'Workspaces',      value: s?.workspaces ?? '—' },
+      { label: 'Agents',           value: s?.agents ?? '—' },
+      { label: 'Conversations',    value: s?.conversations ?? '—' },
+      { label: 'Messages',         value: s?.messages ?? '—' },
+      { label: 'Cost',             value: s?.total_cost_usd != null ? `$${s.total_cost_usd}` : '—' },
+      { label: 'Knowledge Bases',  value: s?.knowledge_bases ?? '—' },
+      { label: 'Web Collections',  value: s?.website_collections ?? '—' },
+      { label: 'Connectors',       value: s?.active_connectors ?? '—' },
     ];
     document.getElementById('stat-cards').innerHTML = cards.map(c => `
-      <div class="card" style="text-align:center; padding:20px;">
-        <div style="font-size:28px; font-weight:700; letter-spacing:-1px;">${c.value}</div>
-        <div style="color:var(--text-muted); font-size:13px; margin-top:4px;">${c.label}</div>
+      <div class="stat-card">
+        <div class="val">${c.value}</div>
+        <div class="lbl">${c.label}</div>
       </div>`).join('');
+  }
 
-    // Workspaces list
-    document.getElementById('my-workspaces').innerHTML = (workspaces?.items || []).map(ws => `
+  function renderRecentConvs(convs, workspaces) {
+    const wsMap = {};
+    workspaces.forEach(w => { wsMap[w.id] = w; });
+    const el = document.getElementById('recent-convs');
+    if (!convs.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No conversations yet.</div>';
+      return;
+    }
+    el.innerHTML = convs.map(c => {
+      const ws = wsMap[c.workspace_id];
+      return `<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-size:13px; font-weight:500;">${esc(c.title || 'Untitled conversation')}</div>
+          ${ws ? `<div style="font-size:11px; color:var(--text-muted);">${esc(ws.name)} · ${timeSince(c.created_at)}</div>` : `<div style="font-size:11px; color:var(--text-muted);">${timeSince(c.created_at)}</div>`}
+        </div>
+        <a href="/chat.html?workspace_id=${c.workspace_id}&conversation_id=${c.id}" class="btn btn-secondary btn-sm">Open</a>
+      </div>`;
+    }).join('');
+  }
+
+  function renderConnectors(instances) {
+    const el = document.getElementById('connectors-section');
+    if (!instances.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); font-size:13px; margin-bottom:10px;">No services connected.</div>';
+    } else {
+      el.innerHTML = '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;">' +
+        instances.map(i => `<span class="conn-pill">✓ ${esc(i.definition?.display_name || i.account_label || 'Connected')}</span>`).join('') +
+        '</div>';
+    }
+    el.innerHTML += `<a href="/workspace.html" class="btn btn-secondary btn-sm">+ Add connector</a>`;
+  }
+
+  function renderWorkspaces(items) {
+    document.getElementById('my-workspaces').innerHTML = items.map(ws => `
       <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border);">
         <div>
           <div style="font-weight:500; font-size:14px;">${esc(ws.name)}</div>
@@ -125,9 +182,6 @@
           <a href="/workspace.html?id=${ws.id}" class="btn btn-secondary btn-sm">Build</a>
         </div>
       </div>`).join('') || '<div style="color:var(--text-muted); font-size:13px;">No workspaces yet.</div>';
-
-    // Personas
-    renderPersonasList(personas || []);
   }
 
   function renderPersonasList(list) {
@@ -163,42 +217,14 @@
     catch (err) { toast(err.message, 'error'); }
   }
 
-  async function loadAdminView() {
-    if (!isAdmin) return;
-    const users = await apiGet('admin/users?limit=50');
-    document.getElementById('admin-users-table').innerHTML = `
-      <table style="width:100%; border-collapse:collapse; font-size:13px;">
-        <thead><tr style="border-bottom:2px solid var(--border);">
-          <th style="text-align:left; padding:8px 0;">Email</th>
-          <th style="text-align:left; padding:8px 0;">Role</th>
-          <th style="text-align:left; padding:8px 0;">Active</th>
-          <th style="text-align:left; padding:8px 0;">Joined</th>
-        </tr></thead>
-        <tbody>${(users?.items || []).map(u => `
-          <tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:8px 0;">${esc(u.email)}</td>
-            <td style="padding:8px 0;"><span class="badge">${esc(u.role)}</span></td>
-            <td style="padding:8px 0;">${u.is_active ? '✓' : '✗'}</td>
-            <td style="padding:8px 0;">${new Date(u.created_at).toLocaleDateString()}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`;
-  }
-
-  function switchView(view) {
-    const userView = document.getElementById('user-view');
-    const adminView = document.getElementById('admin-view');
-    document.getElementById('user-tab').className = view === 'user' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
-    document.getElementById('admin-tab').className = view === 'admin' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm hidden';
-    if (view === 'user') {
-      userView.classList.remove('hidden');
-      adminView.classList.add('hidden');
-      if (isAdmin) document.getElementById('admin-tab').classList.remove('hidden');
-    } else {
-      userView.classList.add('hidden');
-      adminView.classList.remove('hidden');
-      loadAdminView();
-    }
+  function timeSince(isoStr) {
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
   }
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }

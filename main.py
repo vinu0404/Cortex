@@ -149,6 +149,11 @@ async def serve_dashboard():
     return FileResponse("frontend/dashboard.html")
 
 
+@app.get("/admin.html")
+async def serve_admin():
+    return FileResponse("frontend/admin.html")
+
+
 @app.get("/knowledge-bases.html")
 async def serve_knowledge_bases():
     return FileResponse("frontend/knowledge-bases.html")

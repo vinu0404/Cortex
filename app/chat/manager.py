@@ -16,7 +16,6 @@ from app.chat.db_models import (
     UserLongTermMemory,
 )
 from app.common.exceptions import ForbiddenError, NotFoundError
-from app.common.pagination import build_cursor_page, decode_cursor
 from config.settings import get_settings
 from core.schemas import LongTermMemory
 
@@ -229,6 +228,12 @@ class ChatManager:
         self._db.add(artifact)
         await self._db.flush()
         return artifact
+
+    async def get_artifact_by_message_and_type(self, message_id: UUID, type: str) -> MessageArtifact | None:
+        return await self._db.scalar(
+            select(MessageArtifact)
+            .where(MessageArtifact.message_id == message_id, MessageArtifact.type == type)
+        )
 
     async def get_artifacts_for_messages(self, message_ids: list[UUID]) -> dict[UUID, list[MessageArtifact]]:
         if not message_ids:

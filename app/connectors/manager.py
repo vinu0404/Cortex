@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -74,6 +75,14 @@ _CONNECTOR_DEFINITIONS = [
 ]
 
 
+def _save_token_expiry(instance: ConnectorInstance, tokens: dict) -> None:
+    expires_in = tokens.get("expires_in")
+    instance.token_expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+        if expires_in and int(expires_in) > 0 else None
+    )
+
+
 class ConnectorManager:
     def __init__(self, db: AsyncSession):
         self._db = db
@@ -141,6 +150,7 @@ class ConnectorManager:
             account_label=tokens.get("account_label"),
             status=ConnectorStatusEnum.active,
         )
+        _save_token_expiry(instance, tokens)
         self._db.add(instance)
         try:
             await self._db.flush()
@@ -149,6 +159,15 @@ class ConnectorManager:
             raise ConflictError("Connector already connected") from e
 
         return instance
+
+    async def refresh_connector_tokens(self, instance: ConnectorInstance) -> dict:
+        connector = self._get_connector_class(instance.definition.slug)()
+        new_tokens = await connector.refresh_access_token(decrypt_json(instance.encrypted_tokens))
+        instance.encrypted_tokens = encrypt_json(new_tokens)
+        _save_token_expiry(instance, new_tokens)
+        instance.updated_at = datetime.now(timezone.utc)
+        await self._db.flush()
+        return new_tokens
 
     async def delete_instance(self, instance_id: UUID, user_id: UUID) -> None:
         instance = await self._db.get(ConnectorInstance, instance_id)
