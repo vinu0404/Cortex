@@ -15,14 +15,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    kbsourcetypeenum = postgresql.ENUM("device", "s3_url", "gdrive", name="kbsourcetypeenum", create_type=False)
-    kbsourcetypeenum.create(op.get_bind(), checkfirst=True)
-
-    kbprocessingstatusenum = postgresql.ENUM(
-        "pending", "uploading", "processing", "ready", "failed",
-        name="kbprocessingstatusenum", create_type=False,
-    )
-    kbprocessingstatusenum.create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("device", "s3_url", "gdrive", name="kbsourcetypeenum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("pending", "uploading", "processing", "ready", "failed", name="kbprocessingstatusenum", create_type=False).create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "knowledge_bases",
@@ -48,8 +42,8 @@ def upgrade() -> None:
         sa.Column("storage_key", sa.String(), nullable=True),
         sa.Column("staging_path", sa.String(), nullable=True),
         sa.Column("source_url", sa.Text(), nullable=True),
-        sa.Column("source_type", sa.Enum("device", "s3_url", "gdrive", name="kbsourcetypeenum"), nullable=False, server_default="device"),
-        sa.Column("processing_status", sa.Enum("pending", "uploading", "processing", "ready", "failed", name="kbprocessingstatusenum"), nullable=False, server_default="pending"),
+        sa.Column("source_type", postgresql.ENUM("device", "s3_url", "gdrive", name="kbsourcetypeenum", create_type=False), nullable=False, server_default="device"),
+        sa.Column("processing_status", postgresql.ENUM("pending", "uploading", "processing", "ready", "failed", name="kbprocessingstatusenum", create_type=False), nullable=False, server_default="pending"),
         sa.Column("chunk_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("embedding_model", sa.String(), nullable=True),
         sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=True),

@@ -45,8 +45,19 @@ def _crawl_in_subprocess(url: str, max_depth: int, output_path: str, max_pages: 
 # Celery task
 # ---------------------------------------------------------------------------
 
+class _WcTaskBase(celery_app.Task):
+    abstract = True
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        url_id = args[0] if args else kwargs.get("url_id")
+        logger.error("crawl_website_task permanently failed: url_id=%s err=%s", url_id, exc)
+        if url_id:
+            asyncio.run(_set_url_failed(url_id, str(exc)))
+
+
 @celery_app.task(
     bind=True,
+    base=_WcTaskBase,
     max_retries=2,
     acks_late=True,
     soft_time_limit=settings.WC_CRAWL_TIMEOUT_SECONDS + 30,
@@ -63,14 +74,6 @@ def crawl_website_task(self, url_id: str) -> None:
     except Exception as exc:
         logger.error("crawl_website_task retry: url_id=%s err=%s", url_id, exc)
         raise self.retry(exc=exc)
-
-
-@crawl_website_task.on_failure
-def on_crawl_failure(exc, task_id, args, kwargs, einfo):
-    url_id = args[0] if args else kwargs.get("url_id")
-    logger.error("crawl_website_task permanently failed: url_id=%s err=%s", url_id, exc)
-    if url_id:
-        asyncio.run(_set_url_failed(url_id, str(exc)))
 
 
 # ---------------------------------------------------------------------------

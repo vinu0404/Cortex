@@ -369,8 +369,14 @@
         }
       } catch {}
     };
-    sseSource.onerror = () => {
+    sseSource.onerror = async () => {
       sseSource.close();
+      const refreshed = await _tryRefresh();
+      if (!refreshed) {
+        clearTokens();
+        redirectToAuth();
+        return;
+      }
       setTimeout(startSse, 3000);
     };
   }

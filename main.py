@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from langfuse.callback import CallbackHandler
+import os
 
 from app.auth.controller import router as auth_router
 from app.workspaces.controller import router as workspaces_router
@@ -20,7 +20,7 @@ from app.chat.controller import router as chat_router
 from app.common.middleware import RequestContextMiddleware
 from config.settings import get_settings
 from database.session import engine
-
+from app.common.exceptions import AppError
 settings = get_settings()
 logging.basicConfig(
     level=settings.log_level,
@@ -31,12 +31,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    langfuse_handler = CallbackHandler(
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-        host=settings.LANGFUSE_BASE_URL,
-    )
-    litellm.callbacks = [langfuse_handler]
+    # LiteLLM's built-in Langfuse integration reads LANGFUSE_HOST
+    os.environ.setdefault("LANGFUSE_HOST", settings.LANGFUSE_BASE_URL or "")
+    litellm.success_callback = ["langfuse"]
+    litellm.failure_callback = ["langfuse"]
     litellm.set_verbose = settings.is_dev
 
     from app.connectors.manager import ConnectorManager
@@ -86,6 +84,14 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
     return JSONResponse(
         status_code=422,
         content={"status": "error", "code": "VALIDATION_ERROR", "message": "; ".join(msgs)},
+    )
+
+
+@app.exception_handler(AppError)
+async def _app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"status": "error", "code": exc.code, "message": exc.message},
     )
 
 

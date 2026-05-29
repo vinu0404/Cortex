@@ -149,7 +149,7 @@ class Settings(BaseSettings):
 
     @property
     def log_level(self) -> str:
-        return "DEBUG" if self.is_dev else "INFO"
+        return "INFO"
 
 
 _settings: Settings | None = None

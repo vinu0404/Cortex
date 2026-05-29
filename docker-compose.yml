@@ -46,7 +46,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -101,6 +101,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - QDRANT_URL=http://qdrant:6333
+      - PYTHONPATH=/app
     depends_on:
       postgres:
         condition: service_healthy

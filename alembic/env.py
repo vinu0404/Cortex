@@ -7,16 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from config.settings import get_settings
 from database.session import Base
 
-# Import ALL ORM models so Alembic can detect them
-from app.auth.db_models import User, RefreshToken  # noqa: F401
-from app.workspaces.db_models import Workspace  # noqa: F401
-from app.agents.db_models import Agent  # noqa: F401
-from app.connectors.db_models import ConnectorDefinition, ConnectorInstance  # noqa: F401
-from app.api_keys.db_models import UserApiKey  # noqa: F401
-from app.personas.db_models import Persona, AgentPersona  # noqa: F401
-from app.chat.db_models import (  # noqa: F401
-    Conversation, Message, ConversationSummary, HitlRequest, UserLongTermMemory
-)
+import database.models
 
 config = context.config
 settings = get_settings()

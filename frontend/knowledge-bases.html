@@ -359,9 +359,15 @@
         }
       } catch {}
     });
-    sseSource.onerror = () => {
+    sseSource.onerror = async () => {
       sseSource.close();
-      setTimeout(startSse, 5000);
+      const refreshed = await _tryRefresh();
+      if (!refreshed) {
+        clearTokens();
+        redirectToAuth();
+        return;
+      }
+      setTimeout(startSse, 3000);
     };
   }
 

@@ -26,7 +26,7 @@ class ConnectorDefinition(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
-    auth_type: Mapped[AuthTypeEnum] = mapped_column(Enum(AuthTypeEnum), nullable=False)
+    auth_type: Mapped[AuthTypeEnum] = mapped_column(Enum(AuthTypeEnum, create_type=False), nullable=False)
     tools: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     icon: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -63,7 +63,7 @@ class ConnectorInstance(Base):
     encrypted_tokens: Mapped[str] = mapped_column(Text, nullable=False)
     account_label: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[ConnectorStatusEnum] = mapped_column(
-        Enum(ConnectorStatusEnum), default=ConnectorStatusEnum.active, nullable=False
+        Enum(ConnectorStatusEnum, create_type=False), default=ConnectorStatusEnum.active, nullable=False
     )
     token_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

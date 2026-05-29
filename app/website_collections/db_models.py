@@ -55,7 +55,7 @@ class WebsiteUrl(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     max_depth: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     crawl_status: Mapped[WcCrawlStatusEnum] = mapped_column(
-        Enum(WcCrawlStatusEnum), default=WcCrawlStatusEnum.pending, nullable=False, index=True
+        Enum(WcCrawlStatusEnum, create_type=False), default=WcCrawlStatusEnum.pending, nullable=False, index=True
     )
     page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

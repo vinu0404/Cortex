@@ -66,10 +66,10 @@ class KbDocument(Base):
     staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_type: Mapped[KbSourceTypeEnum] = mapped_column(
-        Enum(KbSourceTypeEnum), default=KbSourceTypeEnum.device, nullable=False
+        Enum(KbSourceTypeEnum, create_type=False), default=KbSourceTypeEnum.device, nullable=False
     )
     processing_status: Mapped[KbProcessingStatusEnum] = mapped_column(
-        Enum(KbProcessingStatusEnum), default=KbProcessingStatusEnum.pending, nullable=False, index=True
+        Enum(KbProcessingStatusEnum, create_type=False), default=KbProcessingStatusEnum.pending, nullable=False, index=True
     )
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)

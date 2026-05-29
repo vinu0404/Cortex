@@ -15,11 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    wccrawlstatusenum = postgresql.ENUM(
-        "pending", "crawling", "processing", "ready", "failed",
-        name="wccrawlstatusenum", create_type=False,
-    )
-    wccrawlstatusenum.create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("pending", "crawling", "processing", "ready", "failed", name="wccrawlstatusenum", create_type=False).create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "website_collections",
@@ -40,7 +36,7 @@ def upgrade() -> None:
         sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("max_depth", sa.Integer(), nullable=False, server_default="2"),
-        sa.Column("crawl_status", sa.Enum("pending", "crawling", "processing", "ready", "failed", name="wccrawlstatusenum"), nullable=False, server_default="pending"),
+        sa.Column("crawl_status", postgresql.ENUM("pending", "crawling", "processing", "ready", "failed", name="wccrawlstatusenum", create_type=False), nullable=False, server_default="pending"),
         sa.Column("page_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("chunk_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("login_blocked_count", sa.Integer(), nullable=False, server_default="0"),

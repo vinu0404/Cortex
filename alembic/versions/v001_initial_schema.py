@@ -16,23 +16,12 @@ depends_on = None
 
 def upgrade() -> None:
     # ---- Enums ----------------------------------------------------------------
-    roleenum = postgresql.ENUM("user", "admin", name="roleenum", create_type=False)
-    roleenum.create(op.get_bind(), checkfirst=True)
-
-    agenttypeenum = postgresql.ENUM("MASTER", "CUSTOM", "COMPOSER", name="agenttypeenum", create_type=False)
-    agenttypeenum.create(op.get_bind(), checkfirst=True)
-
-    authtypeenum = postgresql.ENUM("oauth2", "apikey", name="authtypeenum", create_type=False)
-    authtypeenum.create(op.get_bind(), checkfirst=True)
-
-    connectorstatusenum = postgresql.ENUM("active", "expired", "revoked", name="connectorstatusenum", create_type=False)
-    connectorstatusenum.create(op.get_bind(), checkfirst=True)
-
-    messagerolenewnum = postgresql.ENUM("user", "assistant", "system", name="messagerolenewnum", create_type=False)
-    messagerolenewnum.create(op.get_bind(), checkfirst=True)
-
-    hitlstatusenum = postgresql.ENUM("pending", "approved", "denied", "timed_out", name="hitlstatusenum", create_type=False)
-    hitlstatusenum.create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("user", "admin", name="roleenum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("MASTER", "CUSTOM", "COMPOSER", name="agenttypeenum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("oauth2", "apikey", name="authtypeenum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("active", "expired", "revoked", name="connectorstatusenum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("user", "assistant", "system", name="messagerolenewnum", create_type=False).create(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("pending", "approved", "denied", "timed_out", name="hitlstatusenum", create_type=False).create(op.get_bind(), checkfirst=True)
 
     # ---- users ----------------------------------------------------------------
     op.create_table(
@@ -40,7 +29,7 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("email", sa.String(), nullable=False),
         sa.Column("hashed_password", sa.String(), nullable=False),
-        sa.Column("role", sa.Enum("user", "admin", name="roleenum"), nullable=False, server_default="user"),
+        sa.Column("role", postgresql.ENUM("user", "admin", name="roleenum", create_type=False), nullable=False, server_default="user"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -66,7 +55,7 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("slug", sa.String(), nullable=False),
         sa.Column("display_name", sa.String(), nullable=False),
-        sa.Column("auth_type", sa.Enum("oauth2", "apikey", name="authtypeenum"), nullable=False),
+        sa.Column("auth_type", postgresql.ENUM("oauth2", "apikey", name="authtypeenum", create_type=False), nullable=False),
         sa.Column("tools", postgresql.JSON(astext_type=sa.Text()), nullable=False, server_default="[]"),
         sa.Column("icon", sa.String(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
@@ -111,7 +100,7 @@ def upgrade() -> None:
         sa.Column("definition_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("connector_definitions.id", ondelete="CASCADE"), nullable=False),
         sa.Column("encrypted_tokens", sa.Text(), nullable=False),
         sa.Column("account_label", sa.String(), nullable=True),
-        sa.Column("status", sa.Enum("active", "expired", "revoked", name="connectorstatusenum"), nullable=False, server_default="active"),
+        sa.Column("status", postgresql.ENUM("active", "expired", "revoked", name="connectorstatusenum", create_type=False), nullable=False, server_default="active"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("user_id", "definition_id", name="uq_connector_user_definition"),
@@ -126,7 +115,7 @@ def upgrade() -> None:
         sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("system_prompt", sa.Text(), nullable=True),
-        sa.Column("agent_type", sa.Enum("MASTER", "CUSTOM", "COMPOSER", name="agenttypeenum"), nullable=False, server_default="CUSTOM"),
+        sa.Column("agent_type", postgresql.ENUM("MASTER", "CUSTOM", "COMPOSER", name="agenttypeenum", create_type=False), nullable=False, server_default="CUSTOM"),
         sa.Column("model_id", sa.String(), nullable=True),
         sa.Column("api_key_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("user_api_keys.id", ondelete="SET NULL"), nullable=True),
         sa.Column("display_order", sa.Integer(), nullable=False, server_default="0"),
@@ -186,7 +175,7 @@ def upgrade() -> None:
         "messages",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("conversation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("role", sa.Enum("user", "assistant", "system", name="messagerolenewnum"), nullable=False),
+        sa.Column("role", postgresql.ENUM("user", "assistant", "system", name="messagerolenewnum", create_type=False), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("token_details", postgresql.JSON(astext_type=sa.Text()), nullable=True),
         sa.Column("total_cost_usd", sa.Float(), nullable=True),
@@ -215,7 +204,7 @@ def upgrade() -> None:
         sa.Column("conversation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("agent_id", sa.String(), nullable=False),
         sa.Column("tool_names", postgresql.JSON(astext_type=sa.Text()), nullable=False, server_default="[]"),
-        sa.Column("status", sa.Enum("pending", "approved", "denied", "timed_out", name="hitlstatusenum"), nullable=False, server_default="pending"),
+        sa.Column("status", postgresql.ENUM("pending", "approved", "denied", "timed_out", name="hitlstatusenum", create_type=False), nullable=False, server_default="pending"),
         sa.Column("user_instructions", sa.Text(), nullable=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

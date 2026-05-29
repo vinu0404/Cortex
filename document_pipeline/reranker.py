@@ -1,11 +1,7 @@
-import asyncio
 import json
 import logging
-from functools import partial
 
 import litellm
-from sentence_transformers import CrossEncoder
-
 
 from config.settings import get_settings
 
@@ -13,36 +9,11 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-# accept top_k from caller so it wins over KB_TOP_K_FINAL
 async def rerank(query: str, candidates: list[dict], api_key: str, top_k: int | None = None) -> list[dict]:
-    strategy = settings.KB_RERANK_STRATEGY
     effective_top_k = top_k if top_k is not None else settings.KB_TOP_K_FINAL
-
-    if strategy == "cross_encoder":
-        # cross-encoder is CPU-bound — run in executor to avoid blocking event loop
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, partial(_rerank_cross_encoder, query, candidates, effective_top_k)
-        )
-    if strategy == "llm":
+    if settings.KB_RERANK_STRATEGY == "llm":
         return await _rerank_llm(query, candidates, api_key, effective_top_k)
     return candidates[:effective_top_k]
-
-
-def _rerank_cross_encoder(query: str, candidates: list[dict], top_k: int) -> list[dict]:
-    try:
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [(query, c["text"]) for c in candidates]
-        scores = model.predict(pairs)
-        for candidate, score in zip(candidates, scores):
-            candidate["rerank_score"] = float(score)
-        return sorted(candidates, key=lambda x: x.get("rerank_score", 0), reverse=True)[:top_k]
-    except ImportError:
-        logger.error("sentence-transformers not installed; falling back to RRF order")
-        return candidates[:top_k]
-    except Exception:
-        logger.error("Cross-encoder reranking failed; falling back to RRF order", exc_info=True)
-        return candidates[:top_k]
 
 
 async def _rerank_llm(query: str, candidates: list[dict], api_key: str, top_k: int) -> list[dict]:

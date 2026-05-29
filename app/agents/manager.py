@@ -87,7 +87,19 @@ class AgentManager:
     async def update_agent(self, agent_id: UUID, user_id: UUID, **kwargs) -> Agent:
         kb_ids: list[UUID] | None = kwargs.pop("kb_ids", None)
         collection_ids: list[UUID] | None = kwargs.pop("collection_ids", None)
-        agent = await self._get_editable_agent(agent_id, user_id)
+
+        agent = await self._get_agent_for_owner(agent_id, user_id)
+        if not agent.is_editable:
+            allowed = {k: v for k, v in kwargs.items() if k in ("model_id", "api_key_id")}
+            if not allowed or kb_ids is not None or collection_ids is not None:
+                raise ForbiddenError("Cannot modify system agent")
+            for field, value in allowed.items():
+                if value is not None:
+                    setattr(agent, field, value)
+            agent.updated_at = datetime.now(timezone.utc)
+            await self._db.flush()
+            return agent
+
         for field, value in kwargs.items():
             if value is not None:
                 setattr(agent, field, value)
@@ -181,6 +193,14 @@ class AgentManager:
 
         result = _PromptGenOutput.model_validate_json(response.choices[0].message.content)
         return PromptGenerateResponse(**result.model_dump())
+
+    async def _get_agent_for_owner(self, agent_id: UUID, user_id: UUID) -> Agent:
+        agent = await self._db.get(Agent, agent_id)
+        if not agent or agent.deleted_at:
+            raise NotFoundError("Agent", str(agent_id))
+        if agent.user_id != user_id:
+            raise ForbiddenError("Access denied")
+        return agent
 
     async def _get_editable_agent(self, agent_id: UUID, user_id: UUID) -> Agent:
         agent = await self._db.get(Agent, agent_id)

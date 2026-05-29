@@ -16,8 +16,19 @@ logger = logging.getLogger(__name__)
 # Source 1: device upload
 # ---------------------------------------------------------------------------
 
+class _DocTaskBase(celery_app.Task):
+    abstract = True
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        doc_id = args[0] if args else kwargs.get("doc_id")
+        logger.error("Document processing permanently failed: doc_id=%s err=%s", doc_id, exc)
+        if doc_id:
+            asyncio.run(_set_doc_failed(doc_id, str(exc)))
+
+
 @celery_app.task(
     bind=True,
+    base=_DocTaskBase,
     max_retries=settings.LLM_MAX_RETRIES,
     acks_late=True,
     soft_time_limit=300,
@@ -35,21 +46,13 @@ def process_document_task(self, doc_id: str) -> None:
         raise self.retry(exc=exc)
 
 
-# on_failure must NOT have self as first param — args are (exc, task_id, args, kwargs, einfo)
-@process_document_task.on_failure
-def on_process_document_failure(exc, task_id, args, kwargs, einfo):
-    doc_id = args[0] if args else kwargs.get("doc_id")
-    logger.error("Document processing permanently failed: doc_id=%s err=%s", doc_id, exc)
-    if doc_id:
-        asyncio.run(_set_doc_failed(doc_id, str(exc)))
-
-
 # ---------------------------------------------------------------------------
 # Source 2: S3 URL ingestion
 # ---------------------------------------------------------------------------
 
 @celery_app.task(
     bind=True,
+    base=_DocTaskBase,
     max_retries=settings.LLM_MAX_RETRIES,
     acks_late=True,
     soft_time_limit=300,
@@ -62,15 +65,6 @@ def ingest_from_s3_task(self, doc_id: str, s3_url: str, creds: dict) -> None:
     except Exception as exc:
         logger.error("ingest_from_s3_task retry: doc_id=%s err=%s", doc_id, exc)
         raise self.retry(exc=exc)
-
-
-# Same fix — no self param
-@ingest_from_s3_task.on_failure
-def on_ingest_s3_failure(exc, task_id, args, kwargs, einfo):
-    doc_id = args[0] if args else kwargs.get("doc_id")
-    logger.error("S3 ingestion permanently failed: doc_id=%s err=%s", doc_id, exc)
-    if doc_id:
-        asyncio.run(_set_doc_failed(doc_id, str(exc)))
 
 
 # ---------------------------------------------------------------------------

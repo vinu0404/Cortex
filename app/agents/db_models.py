@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,8 +18,10 @@ class AgentTypeEnum(str, enum.Enum):
 class Agent(Base):
     __tablename__ = "agents"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "name", name="uq_agent_workspace_name",
-                         postgresql_where="deleted_at IS NULL"),
+        Index(
+            "uq_agent_workspace_name", "workspace_id", "name",
+            unique=True, postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_agents_workspace_deleted", "workspace_id", "deleted_at"),
     )
 
@@ -33,7 +35,7 @@ class Agent(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_type: Mapped[AgentTypeEnum] = mapped_column(
-        Enum(AgentTypeEnum), default=AgentTypeEnum.CUSTOM, nullable=False
+        Enum(AgentTypeEnum, create_type=False), default=AgentTypeEnum.CUSTOM, nullable=False
     )
     model_id: Mapped[str | None] = mapped_column(String, nullable=True)
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(

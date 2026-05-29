@@ -1,6 +1,8 @@
 from celery import Celery
 from config.settings import get_settings
-
+from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+import database.session as _db
 settings = get_settings()
 
 celery_app = Celery(
@@ -20,3 +22,17 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
 )
+
+
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def _configure_worker(**kwargs):
+    # Register all ORM models so FK references resolve in ForkPoolWorker subprocesses
+    import database.models
+    _engine = create_async_engine(_db.settings.DATABASE_URL, poolclass=NullPool, echo=False)
+    _db.engine = _engine
+    _db.AsyncSessionFactory = async_sessionmaker(
+        _engine, class_=AsyncSession, expire_on_commit=False, autoflush=False,
+    )

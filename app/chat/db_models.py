@@ -57,7 +57,7 @@ class Message(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
-    role: Mapped[MessageRoleEnum] = mapped_column(Enum(MessageRoleEnum), nullable=False)
+    role: Mapped[MessageRoleEnum] = mapped_column(Enum(MessageRoleEnum, create_type=False), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -96,7 +96,7 @@ class HitlRequest(Base):
     agent_id: Mapped[str] = mapped_column(String, nullable=False)
     tool_names: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[HitlStatusEnum] = mapped_column(
-        Enum(HitlStatusEnum), default=HitlStatusEnum.pending, nullable=False
+        Enum(HitlStatusEnum, create_type=False), default=HitlStatusEnum.pending, nullable=False
     )
     user_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

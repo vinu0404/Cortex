@@ -106,8 +106,11 @@ async def delete_document_chunks(kb_id: str, doc_id: str) -> None:
             collection_name=_collection_name(kb_id),
             points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
         )
-    except Exception:
-        logger.error("Failed to delete chunks for doc %s from kb %s", doc_id, kb_id, exc_info=True)
+    except Exception as e:
+        if getattr(e, "status_code", None) == 404:
+            logger..error("No Qdrant collection found for kb %s when deleting chunks for doc %s", kb_id, doc_id)
+        else:
+            logger.error("Failed to delete chunks for doc %s from kb %s", doc_id, kb_id, exc_info=True)
     finally:
         await client.close()
 
