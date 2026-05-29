@@ -36,6 +36,12 @@ class KbDocumentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PresignUploadRequest(BaseModel):
+    filename: str
+    content_type: str
+    file_size_bytes: int
+
+
 class S3IngestRequest(BaseModel):
     url: str
     access_key_id: str | None = None

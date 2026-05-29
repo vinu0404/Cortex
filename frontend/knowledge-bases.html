@@ -273,26 +273,36 @@
 
   async function doUpload(fileList) {
     if (!activeKbId || !fileList.length) return;
-    const form = new FormData();
-    for (const f of fileList) form.append('files', f);
-    try {
-      const token = getToken();
-      const resp = await fetch(`/knowledge-bases/${activeKbId}/documents`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      const json = await resp.json();
-      if (!resp.ok) throw new Error(json.message || 'Upload failed');
-      const results = json.data || [];
-      const pending = results.filter(r => r.status === 'pending').length;
-      const skipped = results.filter(r => r.skipped).length;
-      const rejected = results.filter(r => r.status === 'rejected');
-      if (pending) toast(`${pending} file(s) queued for processing`);
-      if (skipped) toast(`${skipped} duplicate(s) skipped`);
-      rejected.forEach(r => toast(`${r.filename}: ${r.reason}`, 'error'));
-      await loadDocs(activeKbId);
-    } catch (err) { toast(err.message, 'error'); }
+    let pending = 0, rejected = 0;
+    for (const file of fileList) {
+      try {
+        // Step 1: get presigned PUT URL from backend
+        const presign = await apiPost(`knowledge-bases/${activeKbId}/documents/presign`, {
+          filename: file.name,
+          content_type: file.type || 'application/octet-stream',
+          file_size_bytes: file.size,
+        });
+
+        // Step 2: PUT file directly to B2 — no Authorization header, presigned URL is self-authorizing
+        const uploadResp = await fetch(presign.upload_url, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        });
+        if (!uploadResp.ok) {
+          throw new Error(`Storage upload failed: ${uploadResp.status} ${uploadResp.statusText}`);
+        }
+
+        // Step 3: confirm upload complete → backend triggers Celery processing
+        await apiPost(`knowledge-bases/${activeKbId}/documents/${presign.doc_id}/confirm`, {});
+        pending++;
+      } catch (err) {
+        toast(`Failed to upload ${file.name}: ${err.message}`, 'error');
+        rejected++;
+      }
+    }
+    if (pending) toast(`${pending} file(s) queued for processing`);
+    await loadDocs(activeKbId);
   }
 
   async function addFromS3(e) {

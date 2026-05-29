@@ -56,10 +56,25 @@ async def wc_status_stream(token: str) -> StreamingResponse:
         await pubsub.subscribe(channel)
         try:
             yield "data: connected\n\n"
-            async for message in pubsub.listen():
-                if message["type"] == "message":
+            while True:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=4.0
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    yield ": keepalive\n\n"
+                    await asyncio.sleep(1)
+                    try:
+                        await pubsub.subscribe(channel)
+                    except Exception:
+                        pass
+                    continue
+                if message and message["type"] == "message":
                     yield f"data: {message['data']}\n\n"
-                await asyncio.sleep(0)
+                else:
+                    yield ": keepalive\n\n"
         except asyncio.CancelledError:
             pass
         finally:

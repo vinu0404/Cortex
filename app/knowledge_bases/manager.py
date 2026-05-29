@@ -1,12 +1,10 @@
 import asyncio
-import hashlib
 import logging
-import os
 import uuid
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
@@ -55,7 +53,7 @@ class KnowledgeBaseManager:
         await self._db.commit()
 
         # B2 delete is sync boto3 — must run in executor to avoid blocking event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for doc in docs:
             if doc.storage_key:
                 await loop.run_in_executor(None, _delete_b2_file, doc.storage_key)
@@ -77,88 +75,60 @@ class KnowledgeBaseManager:
         )
         return list(result)
 
-    async def upload_documents(
+    async def presign_upload(
         self,
         kb_id: UUID,
         user_id: UUID,
-        files: list[tuple[str, bytes, str]],  # (filename, bytes, content_type)
-    ) -> list[dict]:
+        filename: str,
+        content_type: str,
+        file_size_bytes: int,
+    ) -> dict:
         await self._get_kb(kb_id, user_id)
 
-        if len(files) > settings.KB_MAX_FILES_PER_UPLOAD:
-            raise ConflictError(
-                f"Too many files. Max: {settings.KB_MAX_FILES_PER_UPLOAD}"
-            )
+        ext = Path(filename).suffix.lower()
+        if ext not in settings.KB_SUPPORTED_EXTENSIONS:
+            raise ConflictError(f"Unsupported extension: {ext}")
+        if file_size_bytes > settings.KB_MAX_FILE_SIZE_MB * 1024 * 1024:
+            raise ConflictError(f"File too large. Max: {settings.KB_MAX_FILE_SIZE_MB} MB")
 
-        results = []
-        for filename, file_bytes, content_type in files:
-            ext = Path(filename).suffix.lower()
-            if ext not in settings.KB_SUPPORTED_EXTENSIONS:
-                results.append({
-                    "filename": filename,
-                    "status": "rejected",
-                    "reason": f"Unsupported extension: {ext}",
-                })
-                continue
+        doc_id = uuid.uuid4()
+        from document_pipeline.storage import build_kb_storage_key, generate_presigned_put_url
+        storage_key = build_kb_storage_key(str(kb_id), str(doc_id), filename)
 
-            size_mb = len(file_bytes) / (1024 * 1024)
-            if size_mb > settings.KB_MAX_FILE_SIZE_MB:
-                results.append({
-                    "filename": filename,
-                    "status": "rejected",
-                    "reason": f"File too large. Max: {settings.KB_MAX_FILE_SIZE_MB} MB",
-                })
-                continue
+        doc = KbDocument(
+            id=doc_id,
+            kb_id=kb_id,
+            user_id=user_id,
+            filename=filename,
+            file_size_bytes=file_size_bytes,
+            content_type=content_type,
+            storage_key=storage_key,
+            staging_path=None,
+            source_type=KbSourceTypeEnum.device,
+            processing_status=KbProcessingStatusEnum.pending_upload,
+        )
+        self._db.add(doc)
+        await self._db.commit()
 
-            file_hash = hashlib.sha256(file_bytes).hexdigest()
+        upload_url = generate_presigned_put_url(storage_key, content_type)
+        return {
+            "doc_id": str(doc_id),
+            "upload_url": upload_url,
+            "storage_key": storage_key,
+            "expires_in": settings.B2_PRESIGN_EXPIRY,
+        }
 
-            dup = await self._db.scalar(
-                select(KbDocument).where(
-                    and_(
-                        KbDocument.kb_id == kb_id,
-                        KbDocument.file_hash == file_hash,
-                        KbDocument.processing_status == KbProcessingStatusEnum.ready,
-                    )
-                )
-            )
-            if dup:
-                results.append({
-                    "doc_id": str(dup.id),
-                    "filename": filename,
-                    "status": "already_indexed",
-                    "skipped": True,
-                })
-                continue
+    async def confirm_upload(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
+        doc = await self._get_doc(kb_id, doc_id, user_id)
+        if doc.processing_status != KbProcessingStatusEnum.pending_upload:
+            raise ConflictError("Document is not awaiting upload confirmation")
 
-            doc_id = uuid.uuid4()
-            staging_dir = os.path.join(settings.KB_STAGING_DIR, str(doc_id))
-            os.makedirs(staging_dir, exist_ok=True)
-            staging_path = os.path.join(staging_dir, filename)
-            with open(staging_path, "wb") as f:
-                f.write(file_bytes)
+        doc.processing_status = KbProcessingStatusEnum.pending
+        await self._db.commit()
 
-            doc = KbDocument(
-                id=doc_id,
-                kb_id=kb_id,
-                user_id=user_id,
-                filename=filename,
-                file_size_bytes=len(file_bytes),
-                content_type=content_type,
-                file_hash=file_hash,
-                staging_path=staging_path,
-                source_type=KbSourceTypeEnum.device,
-                processing_status=KbProcessingStatusEnum.pending,
-            )
-            self._db.add(doc)
-            # commit before Celery dispatch — eager workers read DB immediately
-            await self._db.commit()
-
-            from document_pipeline.tasks import process_document_task
-            process_document_task.delay(str(doc_id))
-
-            results.append({"doc_id": str(doc_id), "filename": filename, "status": "pending"})
-
-        return results
+        from document_pipeline.tasks import process_document_task
+        process_document_task.delay(str(doc_id))
+        return doc
 
     async def ingest_from_s3(
         self,
@@ -217,7 +187,7 @@ class KnowledgeBaseManager:
 
         # B2 delete is sync boto3 — run in executor
         if storage_key:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _delete_b2_file, storage_key)
 
         # await directly — asyncio.create_task is fire-and-forget

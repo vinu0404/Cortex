@@ -125,6 +125,38 @@ def generate_presigned_url(storage_key: str) -> str:
         client.close()
 
 
+def generate_presigned_put_url(storage_key: str, content_type: str) -> str:
+    """Generate a presigned PUT URL for direct client-to-B2 upload.
+    The client PUT request must send the exact same Content-Type header."""
+    client = _get_client()
+    try:
+        return client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": settings.B2_BUCKET, "Key": storage_key, "ContentType": content_type},
+            ExpiresIn=settings.B2_PRESIGN_EXPIRY,
+        )
+    finally:
+        client.close()
+
+
+def configure_b2_cors() -> None:
+    """Configure B2 bucket CORS to allow browser direct uploads. Run once."""
+    client = _get_client()
+    client.put_bucket_cors(
+        Bucket=settings.B2_BUCKET,
+        CORSConfiguration={
+            "CORSRules": [{
+                "AllowedOrigins": ["*"],
+                "AllowedMethods": ["GET", "PUT", "HEAD"],
+                "AllowedHeaders": ["*"],
+                "ExposeHeaders": ["ETag"],
+                "MaxAgeSeconds": 3600,
+            }]
+        },
+    )
+    logger.info("B2 bucket CORS configured for bucket: %s", settings.B2_BUCKET)
+
+
 def delete_file(storage_key: str) -> None:
     try:
         client = _get_client()

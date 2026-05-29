@@ -89,32 +89,33 @@ async def _run_device_pipeline(doc_id: str) -> None:
 
             kb_id = str(doc.kb_id)
             user_id = str(doc.user_id)
-            staging_path = doc.staging_path
             filename = doc.filename
             content_type = doc.content_type or "application/octet-stream"
 
-            # use canonical build_kb_storage_key instead of inline f-string
-            from document_pipeline.storage import multipart_upload_file, build_kb_storage_key
-            storage_key = build_kb_storage_key(kb_id, doc_id, filename)
+            if doc.staging_path:
+                # --- 1. uploading (legacy staging-based path) ---
+                from document_pipeline.storage import multipart_upload_file, build_kb_storage_key
+                storage_key = build_kb_storage_key(kb_id, doc_id, filename)
 
-            # --- 1. uploading ---
-            doc.processing_status = KbProcessingStatusEnum.uploading
-            await db.commit()
-            await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", filename)
+                doc.processing_status = KbProcessingStatusEnum.uploading
+                await db.commit()
+                await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", filename)
 
-            multipart_upload_file(staging_path, storage_key, content_type)
+                multipart_upload_file(doc.staging_path, storage_key, content_type)
 
-            # Delete staging file
-            try:
-                staging_dir = os.path.dirname(staging_path)
-                os.remove(staging_path)
-                shutil.rmtree(staging_dir, ignore_errors=True)
-            except Exception:
-                logger.error("Could not remove staging file: %s", staging_path)
+                try:
+                    staging_dir = os.path.dirname(doc.staging_path)
+                    os.remove(doc.staging_path)
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                except Exception:
+                    logger.error("Could not remove staging file: %s", doc.staging_path)
 
-            doc.storage_key = storage_key
-            doc.staging_path = None
-            await db.commit()
+                doc.storage_key = storage_key
+                doc.staging_path = None
+                await db.commit()
+            else:
+                # Presigned upload — client uploaded directly to B2, file already at doc.storage_key
+                storage_key = doc.storage_key
 
             # --- 2. processing ---
             doc.processing_status = KbProcessingStatusEnum.processing

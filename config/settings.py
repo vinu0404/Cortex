@@ -99,9 +99,6 @@ class Settings(BaseSettings):
     KB_CHUNK_OVERLAP: int = 200
     KB_CSV_ROWS_PER_CHUNK: int = 100
 
-    # --- Knowledge Base: Staging ---
-    KB_STAGING_DIR: str = "./staging"
-
     # --- Knowledge Base: Retrieval ---
     KB_TOP_K_DENSE: int = 50
     KB_TOP_K_SPARSE: int = 50
