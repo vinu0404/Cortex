@@ -88,6 +88,9 @@ app.include_router(chat_router, tags=["chat"])
 from app.admin.controller import router as admin_router
 app.include_router(admin_router, prefix="/admin", tags=["admin"])
 
+from app.knowledge_bases.controller import router as knowledge_bases_router
+app.include_router(knowledge_bases_router, tags=["knowledge-bases"])
+
 
 # ---- Health & Frontend ----
 @app.get("/health")
