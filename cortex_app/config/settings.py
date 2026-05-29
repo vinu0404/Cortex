@@ -78,6 +78,46 @@ class Settings(BaseSettings):
     # --- Tavily ---
     TAVILY_API_KEY: str = ""
 
+    # --- Backblaze B2 (S3-compatible storage) ---
+    B2_ENDPOINT: str = ""
+    B2_REGION: str = "us-east-005"
+    B2_ACCESS_KEY_ID: str = ""
+    B2_SECRET_ACCESS_KEY: str = ""
+    B2_BUCKET: str = ""
+    B2_PRESIGN_EXPIRY: int = 300  # seconds
+
+    # --- Vision ---
+    VISION_MODEL: str = "gpt-4o"
+
+    # --- Knowledge Base: Embeddings ---
+    KB_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    KB_EMBEDDING_DIMS: int = 1536
+    KB_EMBED_BATCH_SIZE: int = 96
+
+    # --- Knowledge Base: Chunking ---
+    KB_CHUNK_SIZE: int = 1000
+    KB_CHUNK_OVERLAP: int = 200
+    KB_CSV_ROWS_PER_CHUNK: int = 100
+
+    # --- Knowledge Base: Staging ---
+    KB_STAGING_DIR: str = "./staging"
+
+    # --- Knowledge Base: Retrieval ---
+    KB_TOP_K_DENSE: int = 50
+    KB_TOP_K_SPARSE: int = 50
+    KB_TOP_K_RRF: int = 20
+    KB_TOP_K_FINAL: int = 5
+    KB_RRF_K: int = 60
+    KB_RERANK_STRATEGY: str = "none"  # cross_encoder | llm | none
+
+    # --- Knowledge Base: File limits ---
+    KB_SUPPORTED_EXTENSIONS: list[str] = [
+        ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv",
+        ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+    ]
+    KB_MAX_FILES_PER_UPLOAD: int = 50
+    KB_MAX_FILE_SIZE_MB: int = 100
+
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
