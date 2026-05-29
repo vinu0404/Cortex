@@ -10,16 +10,19 @@ from app.auth.dependencies import get_current_user
 from app.auth.db_models import User
 from app.chat.manager import ChatManager
 from app.chat.models import (
+    ArtifactSaveRequest,
+    ArtifactSaveResponse,
     ChatStreamRequest,
     ConversationCreate,
     ConversationResponse,
     HitlRespondRequest,
     MessageResponse,
+    SavedArtifactResponse,
 )
 from app.chat.streaming import chat_stream
 from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
-from app.common.pagination import build_cursor_page, decode_cursor
+from app.common.pagination import build_cursor_page, decode_cursor, encode_cursor
 from app.common.redis_client import get_async_redis
 from database.session import get_db, get_custom_db_context_session
 
@@ -68,13 +71,80 @@ async def list_conversations(
 @router.get("/chat/conversations/{conversation_id}/messages", response_model=None)
 async def get_messages(
     conversation_id: UUID,
+    cursor: str | None = Query(None),
+    limit: int = Query(30, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
+        import asyncio
+        from document_pipeline.storage import generate_presigned_url
+
+        cursor_created_at, cursor_id = decode_cursor(cursor) if cursor else (None, None)
         chat_mgr = ChatManager(db)
-        messages = await chat_mgr.get_messages(conversation_id, current_user.id)
-        return ok([MessageResponse.model_validate(m).model_dump(mode="json") for m in messages])
+        messages, has_more = await chat_mgr.get_messages(
+            conversation_id, current_user.id,
+            cursor_created_at=cursor_created_at, cursor_id=cursor_id, limit=limit,
+        )
+        artifact_map = await chat_mgr.get_artifacts_for_messages([m.id for m in messages])
+
+        loop = asyncio.get_running_loop()
+        result = []
+        for m in messages:
+            saved = []
+            for a in artifact_map.get(m.id, []):
+                url = await loop.run_in_executor(None, generate_presigned_url, a.storage_key)
+                saved.append(SavedArtifactResponse(id=a.id, type=a.type, title=a.title, filename=a.filename, url=url))
+            resp = MessageResponse.model_validate(m)
+            resp.saved_artifacts = saved
+            result.append(resp.model_dump(mode="json"))
+
+        prev_cursor = encode_cursor(messages[0].created_at, messages[0].id) if has_more and messages else None
+        return ok({"messages": result, "has_more": has_more, "prev_cursor": prev_cursor})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/chat/artifacts", response_model=None)
+async def save_artifact(
+    body: ArtifactSaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        import asyncio
+        import base64
+        from document_pipeline.storage import build_artifact_storage_key, upload_bytes, generate_presigned_url
+        from app.common.exceptions import ForbiddenError
+
+        # Verify conversation belongs to user
+        chat_mgr = ChatManager(db)
+        await chat_mgr.get_conversation(body.conversation_id, current_user.id)
+
+        filename = body.filename
+        if body.type == "pdf":
+            raw_bytes = base64.b64decode(body.content)
+            content_type = "application/pdf"
+        else:
+            raw_bytes = body.content.encode("utf-8")
+            content_type = "text/csv"
+
+        key = build_artifact_storage_key(str(body.conversation_id), filename)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, upload_bytes, raw_bytes, key, content_type)
+        url = await loop.run_in_executor(None, generate_presigned_url, key)
+
+        artifact = await chat_mgr.save_artifact(
+            message_id=body.message_id,
+            conversation_id=body.conversation_id,
+            user_id=current_user.id,
+            type=body.type,
+            title=body.title,
+            filename=filename,
+            storage_key=key,
+        )
+        await db.commit()
+        return ok(ArtifactSaveResponse(id=artifact.id, url=url).model_dump(mode="json"), status_code=201)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 

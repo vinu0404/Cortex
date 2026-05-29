@@ -27,6 +27,23 @@ def build_kb_storage_key(kb_id: str, doc_id: str, filename: str) -> str:
     return f"kb/{kb_id}/{doc_id}/{filename}"
 
 
+def build_artifact_storage_key(conversation_id: str, filename: str) -> str:
+    return f"artifacts/{conversation_id}/{filename}"
+
+
+def upload_bytes(data: bytes, storage_key: str, content_type: str) -> None:
+    client = _get_client()
+    try:
+        client.put_object(
+            Bucket=settings.B2_BUCKET,
+            Key=storage_key,
+            Body=data,
+            ContentType=content_type,
+        )
+    finally:
+        client.close()
+
+
 def multipart_upload_file(file_path: str, storage_key: str, content_type: str) -> None:
     import os
     if os.path.getsize(file_path) == 0:

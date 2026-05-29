@@ -87,6 +87,9 @@
   let pendingHitlId = null;
   let hitlTimer = null;
   let personas = [];
+  let prevCursor = null;
+  let hasMoreMessages = false;
+  let loadingMore = false;
 
   async function init() {
     const [workspaces, personaList] = await Promise.all([
@@ -122,18 +125,47 @@
       const div = document.createElement('div');
       div.className = `conv-item${conv.id === convId ? ' active' : ''}`;
       div.textContent = conv.title || 'New conversation';
-      div.onclick = () => { convId = conv.id; location.search = `?workspace_id=${wsId}&conversation_id=${conv.id}`; };
+      div.onclick = () => {
+        convId = conv.id;
+        prevCursor = null; hasMoreMessages = false; loadingMore = false;
+        location.search = `?workspace_id=${wsId}&conversation_id=${conv.id}`;
+      };
       list.appendChild(div);
     });
   }
 
-  async function loadHistory(id) {
-    const msgs = await apiGet(`chat/conversations/${id}/messages`);
-    (msgs || []).forEach(m => appendMessage(m.role, m.content));
+  async function loadHistory(id, cursor = null) {
+    if (loadingMore) return;
+    loadingMore = true;
+    try {
+      const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=30` : '?limit=30';
+      const data = await apiGet(`chat/conversations/${id}/messages${qs}`);
+      const msgs = data?.messages || [];
+      hasMoreMessages = data?.has_more ?? false;
+      prevCursor = data?.prev_cursor ?? null;
+
+      const container = document.getElementById('messages');
+      if (!cursor) {
+        msgs.forEach(m => {
+          const bubble = appendMessage(m.role, m.content);
+          (m.saved_artifacts || []).forEach(a => renderArtifact(bubble, a));
+        });
+      } else {
+        const prevHeight = container.scrollHeight;
+        [...msgs].reverse().forEach(m => {
+          const bubble = prependMessage(m.role, m.content);
+          (m.saved_artifacts || []).forEach(a => renderArtifact(bubble, a));
+        });
+        container.scrollTop = container.scrollHeight - prevHeight;
+      }
+    } finally {
+      loadingMore = false;
+    }
   }
 
   function newConversation() {
     convId = null;
+    prevCursor = null; hasMoreMessages = false; loadingMore = false;
     document.getElementById('messages').innerHTML = '';
     document.getElementById('plan-bar').classList.add('hidden');
     history.replaceState({}, '', `?workspace_id=${wsId}`);
@@ -198,6 +230,7 @@
           document.getElementById('compacting-bar').classList.remove('hidden');
         } else if (event === 'done') {
           convId = data.conversation_id;
+          if (data.message_id) assistantEl.dataset.messageId = data.message_id;
           history.replaceState({}, '', `?workspace_id=${wsId}&conversation_id=${convId}`);
           await loadConversations();
         } else if (event === 'error') {
@@ -214,8 +247,7 @@
     }
   }
 
-  function appendMessage(role, text) {
-    const container = document.getElementById('messages');
+  function createMessageBubble(role, text) {
     const wrap = document.createElement('div');
     wrap.className = 'msg-wrapper';
     wrap.style.alignItems = role === 'user' ? 'flex-end' : 'flex-start';
@@ -226,8 +258,21 @@
     content.textContent = text;
     bubble.appendChild(content);
     wrap.appendChild(bubble);
+    return { wrap, bubble };
+  }
+
+  function appendMessage(role, text) {
+    const container = document.getElementById('messages');
+    const { wrap, bubble } = createMessageBubble(role, text);
     container.appendChild(wrap);
     scrollBottom();
+    return bubble;
+  }
+
+  function prependMessage(role, text) {
+    const container = document.getElementById('messages');
+    const { wrap, bubble } = createMessageBubble(role, text);
+    container.insertBefore(wrap, container.firstChild);
     return bubble;
   }
 
@@ -262,9 +307,35 @@
       btn.className = 'btn btn-secondary btn-sm';
       btn.style.marginTop = '6px';
       btn.textContent = '⬇ Download CSV';
-      btn.href = `data:text/csv;charset=utf-8,${encodeURIComponent(artifact.content)}`;
-      btn.download = artifact.filename || 'data.csv';
+      btn.href = artifact.url || `data:text/csv;charset=utf-8,${encodeURIComponent(artifact.content)}`;
+      if (!artifact.url) btn.download = artifact.filename || 'data.csv';
+      else btn.target = '_blank';
       div.appendChild(title); div.appendChild(pre); div.appendChild(btn);
+      if (!artifact.url) {
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-primary btn-sm';
+        saveBtn.style.cssText = 'margin-top:6px; margin-left:6px;';
+        saveBtn.textContent = '💾 Save';
+        saveBtn.addEventListener('click', async () => {
+          const messageId = bubble.dataset.messageId;
+          if (!messageId) { toast('Please wait for response to complete', 'error'); return; }
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'Saving…';
+          try {
+            const result = await apiPost('chat/artifacts', {
+              message_id: messageId, conversation_id: convId,
+              type: artifact.type, title: artifact.title,
+              filename: artifact.filename || 'data.csv', content: artifact.content,
+            });
+            saveBtn.textContent = '✓ Saved';
+            btn.href = result.url; btn.removeAttribute('download'); btn.target = '_blank';
+          } catch (e) {
+            saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
+            toast('Failed to save: ' + e.message, 'error');
+          }
+        });
+        div.appendChild(saveBtn);
+      }
       container.appendChild(div);
 
     } else if (artifact.type === 'pdf') {
@@ -272,9 +343,35 @@
       btn.className = 'btn btn-secondary btn-sm';
       btn.style.marginTop = '8px';
       btn.textContent = '⬇ Download PDF';
-      btn.href = `data:application/pdf;base64,${artifact.content}`;
-      btn.download = artifact.filename || 'document.pdf';
+      btn.href = artifact.url || `data:application/pdf;base64,${artifact.content}`;
+      if (!artifact.url) btn.download = artifact.filename || 'document.pdf';
+      else btn.target = '_blank';
       container.appendChild(btn);
+      if (!artifact.url) {
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-primary btn-sm';
+        saveBtn.style.cssText = 'margin-top:8px; margin-left:6px;';
+        saveBtn.textContent = '💾 Save';
+        saveBtn.addEventListener('click', async () => {
+          const messageId = bubble.dataset.messageId;
+          if (!messageId) { toast('Please wait for response to complete', 'error'); return; }
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'Saving…';
+          try {
+            const result = await apiPost('chat/artifacts', {
+              message_id: messageId, conversation_id: convId,
+              type: artifact.type, title: artifact.title,
+              filename: artifact.filename || 'document.pdf', content: artifact.content,
+            });
+            saveBtn.textContent = '✓ Saved';
+            btn.href = result.url; btn.removeAttribute('download'); btn.target = '_blank';
+          } catch (e) {
+            saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
+            toast('Failed to save: ' + e.message, 'error');
+          }
+        });
+        container.appendChild(saveBtn);
+      }
 
     } else if (artifact.type === 'code') {
       const div = document.createElement('div');
@@ -347,6 +444,13 @@
   }
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  document.getElementById('messages').addEventListener('scroll', () => {
+    const el = document.getElementById('messages');
+    if (el.scrollTop < 80 && hasMoreMessages && !loadingMore && convId) {
+      loadHistory(convId, prevCursor);
+    }
+  });
 
   init();
 </script>

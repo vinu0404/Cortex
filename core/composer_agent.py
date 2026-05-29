@@ -24,6 +24,7 @@ class ComposerArtifact(BaseModel):
     content: str
     language: str | None = None  # for code artifacts
     filename: str | None = None  # for pdf/csv downloads
+    url: str | None = None  # B2 presigned URL after upload (pdf/csv)
 
 
 class ComposerOutput(BaseModel):

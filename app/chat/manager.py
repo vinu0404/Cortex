@@ -11,6 +11,7 @@ from app.chat.db_models import (
     HitlRequest,
     HitlStatusEnum,
     Message,
+    MessageArtifact,
     MessageRoleEnum,
     UserLongTermMemory,
 )
@@ -64,14 +65,29 @@ class ChatManager:
             raise ForbiddenError("Access denied")
         return conv
 
-    async def get_messages(self, conversation_id: UUID, user_id: UUID) -> list[Message]:
+    async def get_messages(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        cursor_created_at: datetime | None = None,
+        cursor_id: UUID | None = None,
+        limit: int = 30,
+    ) -> tuple[list[Message], bool]:
         await self.get_conversation(conversation_id, user_id)
-        result = await self._db.scalars(
+        query = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit + 1)
         )
-        return list(result)
+        if cursor_created_at and cursor_id:
+            query = query.where(
+                (Message.created_at < cursor_created_at)
+                | ((Message.created_at == cursor_created_at) & (Message.id < cursor_id))
+            )
+        rows = list(await self._db.scalars(query))
+        has_more = len(rows) > limit
+        return list(reversed(rows[:limit])), has_more
 
     async def add_message(
         self,
@@ -190,3 +206,37 @@ class ChatManager:
         if conv:
             conv.title = title
             conv.updated_at = datetime.now(timezone.utc)
+
+    async def save_artifact(
+        self,
+        message_id: UUID,
+        conversation_id: UUID,
+        user_id: UUID,
+        type: str,
+        title: str,
+        filename: str,
+        storage_key: str,
+    ) -> MessageArtifact:
+        artifact = MessageArtifact(
+            message_id=message_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            type=type,
+            title=title,
+            filename=filename,
+            storage_key=storage_key,
+        )
+        self._db.add(artifact)
+        await self._db.flush()
+        return artifact
+
+    async def get_artifacts_for_messages(self, message_ids: list[UUID]) -> dict[UUID, list[MessageArtifact]]:
+        if not message_ids:
+            return {}
+        rows = list(await self._db.scalars(
+            select(MessageArtifact).where(MessageArtifact.message_id.in_(message_ids))
+        ))
+        result: dict[UUID, list[MessageArtifact]] = {}
+        for row in rows:
+            result.setdefault(row.message_id, []).append(row)
+        return result

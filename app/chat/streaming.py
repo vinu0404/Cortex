@@ -255,9 +255,10 @@ async def chat_stream(
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
     async with get_custom_db_context_session() as db:
-        await ChatManager(db).add_message(
+        msg = await ChatManager(db).add_message(
             conversation_id, MessageRoleEnum.assistant, response_text, latency_ms=elapsed_ms
         )
+        message_id = msg.id
     mem_mgr.add_message("assistant", response_text)
 
     # Record token usage for budget enforcement (fire-and-forget)
@@ -280,7 +281,7 @@ async def chat_stream(
         )
     schedule_long_term_memory(query, response_text, user_id, master_model, master_key, _update_ltm)
 
-    yield sse_event({"total_ms": elapsed_ms, "conversation_id": str(conversation_id)}, "done")
+    yield sse_event({"total_ms": elapsed_ms, "conversation_id": str(conversation_id), "message_id": str(message_id)}, "done")
 
 
 # ---- Helpers ----
