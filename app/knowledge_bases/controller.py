@@ -4,7 +4,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -21,7 +21,7 @@ from app.knowledge_bases.models import (
     S3IngestRequest,
 )
 from config.settings import get_settings
-from database.session import get_db
+from database.session import get_db, get_custom_db_context_session
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -172,10 +172,7 @@ async def view_document(
 
 
 @router.get("/knowledge-bases/status/stream")
-async def kb_status_stream(
-    token: str,
-    db: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
+async def kb_status_stream(token: str) -> StreamingResponse:
     from jose import JWTError, jwt
     from app.auth.manager import AuthManager
     from uuid import UUID as _UUID
@@ -186,12 +183,12 @@ async def kb_status_stream(
         user_id_str = payload.get("sub")
         if not user_id_str:
             raise ValueError
-        user = await AuthManager(db).get_user_by_id(_UUID(user_id_str))
-        if not user or not user.is_active:
-            raise ValueError
+        async with get_custom_db_context_session() as db:
+            user = await AuthManager(db).get_user_by_id(_UUID(user_id_str))
+            if not user or not user.is_active:
+                raise ValueError
     except (JWTError, ValueError) as e:
         logger.error("SSE auth rejected: %s — %s", type(e).__name__, e)
-        from fastapi.responses import Response
         return Response("Unauthorized", status_code=401)
 
     user_id = user.id

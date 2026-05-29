@@ -415,6 +415,7 @@
     document.getElementById('agent-name').value = '';
     document.getElementById('agent-prompt').value = '';
     document.getElementById('agent-user-desc').value = '';
+    document.querySelectorAll('#tool-picker input').forEach(cb => cb.checked = false);
     document.querySelectorAll('#kb-picker input').forEach(cb => cb.checked = false);
     document.querySelectorAll('#wc-picker input').forEach(cb => cb.checked = false);
     hideModal('modal-agent');
@@ -501,7 +502,7 @@
   function goChat() { window.location.href = `/chat.html?workspace_id=${wsId}`; }
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-  init().then(() => { renderToolPicker(); renderKbPicker(); });
+  init().then(() => { renderToolPicker(); renderKbPicker(); renderWcPicker(); });
 </script>
 </body>
 </html>

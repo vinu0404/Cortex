@@ -1,8 +1,8 @@
 # Cortex — Multi-Agent Orchestration Platform
 
-A workspace-based multi-agent AI platform built with FastAPI and LiteLLM. Users build workspaces containing custom agents, connect them to real-world tools (Gmail, GitHub, Calendar, Salesforce, Web Search), and chat with the assembled workspace. Agents are orchestrated via **Kahn's topological sort** — independent agents run in parallel, dependent agents run in sequence. No LangChain, no LangGraph.
+A workspace-based multi-agent AI platform built with FastAPI and LiteLLM. Users build workspaces containing custom agents, connect them to real-world tools (Gmail, GitHub, Calendar, Salesforce, Web Search), attach **Knowledge Bases** (file uploads → Qdrant) and **Website Collections** (web crawl → Qdrant), then chat with the assembled workspace. Agents are orchestrated via **Kahn's topological sort** — independent agents run in parallel, dependent agents run in sequence. No LangChain, no LangGraph.
 
-**Key design:** Each workspace has a non-editable **Master Agent** that plans execution (which agents, in what order, with what tools) and a non-editable **Composer Agent** that synthesizes the final streamed answer. Users define custom agents in between.
+**Key design:** Each workspace has a non-editable **Master Agent** that plans execution (which agents, in what order, with what tools) and a non-editable **Composer Agent** that synthesizes the final streamed answer. Users define custom agents in between. File ingestion and web crawling run as **Celery background tasks** — results streamed to the frontend via Redis Pub/Sub → SSE.
 
 ---
 
@@ -12,8 +12,9 @@ A workspace-based multi-agent AI platform built with FastAPI and LiteLLM. Users 
 
 - **Python 3.11+**
 - **Docker** (for PostgreSQL, Redis, Qdrant)
+- **Scrapy** — for website crawling (`pip install scrapy`)
 - A **Langfuse** account (cloud or self-hosted) — all prompts live there; app fails to start without it
-- At least one LLM API key: OpenAI (`sk-`), Anthropic (`sk-ant-`), Gemini (`AIza`), or Groq (`gsk_`)
+- At least one LLM API key (OpenAI, Anthropic, Gemini, or Groq) — used for embeddings + LLM calls
 
 ### 1. Start Infrastructure
 
@@ -23,9 +24,10 @@ docker compose up -d
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| PostgreSQL 16 | `5432` | All relational data — users, workspaces, agents, messages, HITL |
-| Redis 7 | `6379` | HITL pub/sub, OAuth CSRF state, token budget counters |
-| Qdrant | `6333` | Reserved for Phase 2 knowledge bases |
+| PostgreSQL 16 | `5432` | All relational data — users, workspaces, agents, messages, KB, WC |
+| Redis 7 | `6379/0` | HITL pub/sub, OAuth CSRF state, token budget counters |
+| Redis 7 | `6379/1` | Celery broker + backend |
+| Qdrant | `6333` | Vector store — KB collections (`kb_{id}`) + WC collections (`wc_{id}`) |
 
 ### 2. Create Virtual Environment
 
@@ -37,61 +39,25 @@ source .venv/bin/activate          # Linux / macOS
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
+### 3. Configure Environment
 
-Create `.env` in `cortex_app/`:
+Copy `.env.example` to `.env` and fill in credentials:
 
-```env
-# ── Required ──────────────────────────────────────────────────────
-DATABASE_URL=postgresql+asyncpg://cortex:cortex@localhost:5432/cortex
-REDIS_URL=redis://localhost:6379/0
-
-# ── Auth ──────────────────────────────────────────────────────────
-JWT_SECRET=your-256-bit-secret
-ENCRYPTION_KEY=your-32-byte-base64-encoded-key     # base64url, decodes to ≥ 32 bytes
-
-# ── Langfuse (required) ───────────────────────────────────────────
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
-
-# ── Web Search (optional) ─────────────────────────────────────────
-TAVILY_API_KEY=tvly-...
-
-# ── OAuth Connectors (optional) ───────────────────────────────────
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_REDIRECT_URI=http://localhost:8000/connectors/callback
-
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-GITHUB_REDIRECT_URI=http://localhost:8000/connectors/callback
-
-SALESFORCE_CLIENT_ID=...
-SALESFORCE_CLIENT_SECRET=...
-SALESFORCE_REDIRECT_URI=http://localhost:8000/connectors/callback
-
-# ── Env toggle ────────────────────────────────────────────────────
-ENVIRONMENT=dev       # dev = DEBUG logging, open CORS, Swagger UI
-                      # prod = INFO logging, CORS_ORIGINS whitelist, no Swagger
+```bash
+cp .env.example .env
 ```
+
+At minimum you need: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `LANGFUSE_*`.
 
 ### 4. Seed Langfuse Prompts
 
-All agent prompts (Master, Composer, memory compression, title generation, suggestion generation, long-term memory extraction) live in Langfuse. Seed them once:
+All agent prompts live in Langfuse. Seed once:
 
 ```bash
 python seed_langfuse.py
 ```
 
-Required prompt names:
-- `master_agent`
-- `composer_agent`
-- `memory_compression`
-- `long_term_memory_extraction`
-- `title_generation`
-- `suggestion_generation`
-- `agent_prompt_generator`
+Required prompt names: `master_agent`, `composer_agent`, `memory_compression`, `long_term_memory_extraction`, `title_generation`, `suggestion_generation`, `agent_prompt_generator`
 
 ### 5. Apply Database Migrations
 
@@ -99,19 +65,7 @@ Required prompt names:
 alembic upgrade head
 ```
 
-**Everyday workflow** after changing a DB model:
-
-```bash
-alembic revision --autogenerate -m "describe change"
-# Review generated file in alembic/versions/
-alembic upgrade head
-```
-
-```bash
-alembic current          # which revision DB is at
-alembic history          # full migration history
-alembic downgrade -1     # roll back one migration
-```
+Creates all tables including `knowledge_bases`, `kb_documents`, `agent_knowledge_bases`, `website_collections`, `website_urls`, `agent_website_collections`.
 
 ### 6. Start the Server
 
@@ -119,13 +73,21 @@ alembic downgrade -1     # roll back one migration
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+### 7. Start Celery Worker
+
+Required for document ingestion and web crawling:
+
+```bash
+celery -A celery_app worker --loglevel=info --concurrency=4
+```
+
 | URL | What |
 |-----|------|
 | `http://localhost:8000` | Workspace home |
-| `http://localhost:8000/auth.html` | Login / register |
+| `http://localhost:8000/knowledge-bases.html` | Knowledge Base manager |
+| `http://localhost:8000/website-collections.html` | Website Collection manager |
 | `http://localhost:8000/workspace.html?id=<uuid>` | Agent builder |
-| `http://localhost:8000/chat.html?workspace=<uuid>` | Chat UI |
-| `http://localhost:8000/dashboard.html` | Usage stats |
+| `http://localhost:8000/chat.html?workspace_id=<uuid>` | Chat UI |
 | `http://localhost:8000/docs` | Swagger (dev only) |
 
 ### Quick Start Summary
@@ -135,6 +97,7 @@ Terminal 1:  docker compose up -d
              alembic upgrade head
              python seed_langfuse.py
 Terminal 2:  uvicorn main:app --reload --port 8000
+Terminal 3:  celery -A celery_app worker --loglevel=info
 ```
 
 ---
@@ -145,43 +108,54 @@ Terminal 2:  uvicorn main:app --reload --port 8000
 graph TB
     User["User (Browser)"]
 
-    User -->|"REST + SSE"| API["FastAPI Layer"]
+    User -->|REST + SSE| API["FastAPI Layer"]
 
-    subgraph Startup ["Startup (lifespan)"]
+    subgraph Startup["Startup (lifespan)"]
         Seed["Seed connector definitions"]
         Discover["ToolRegistry.auto_discover()"]
         LFHook["LiteLLM → Langfuse callback"]
     end
 
-    API -->|"POST /chat/stream"| Stream["SSE Streaming Pipeline"]
+    API -->|POST /chat/stream| Stream["SSE Streaming Pipeline"]
+    API -->|POST knowledge-bases uploads| KBCtrl["KB Controller"]
+    API -->|POST website-collections scrape| WCCtrl["WC Controller"]
 
-    Stream --> LoadCtx["Load workspace context<br/><i>agents, api keys, connector tokens</i>"]
-    LoadCtx --> MemLoad["MemoryManager.load()<br/><i>summaries + last N messages</i>"]
-    MemLoad --> Master["Master Agent<br/><i>LiteLLM + Langfuse prompt<br/>response_format=ExecutionPlan</i>"]
+    Stream --> LoadCtx["Load workspace context\nagents + api keys + connector tokens\nkb_ids + collection_ids per agent"]
+    LoadCtx --> Master["Master Agent\nLiteLLM + Langfuse prompt\nresponse_format=ExecutionPlan"]
+    Master --> Orch["Orchestrator\nKahn toposort → stages"]
 
-    Master -->|"ExecutionPlan (JSON)"| Validate["Plan validation<br/><i>agent names, dep IDs, no cycles</i>"]
-    Validate --> Orch["Orchestrator<br/><i>Kahn toposort → stages</i>"]
-
-    subgraph Stage1 ["Stage 1 (asyncio.gather)"]
-        A1["Custom Agent A<br/><i>dynamic_agent + tools</i>"]
-        A2["Custom Agent B<br/><i>dynamic_agent + tools</i>"]
-    end
-
-    subgraph Stage2 ["Stage 2 (waits for Stage 1)"]
-        A3["Custom Agent C<br/><i>receives A+B outputs</i>"]
+    subgraph Stage1["Stage 1 — asyncio.gather"]
+        A1["Agent A\ntools + knowledge_base_search"]
+        A2["Agent B\ntools + collection_search"]
     end
 
     Orch --> Stage1
-    Stage1 --> Stage2
+    Stage1 --> Composer["Composer Agent\nstreams answer token by token"]
+    Composer -->|SSE token events| User
 
-    Stage1 --> SharedState["Shared State<br/><i>runtime_id → AgentOutput</i>"]
-    Stage2 --> SharedState
+    KBCtrl -->|enqueue| Celery["Celery Worker"]
+    WCCtrl -->|enqueue| Celery
 
-    SharedState --> Composer["Composer Agent<br/><i>streams answer token by token</i>"]
-    Composer -->|"SSE token events"| User
+    subgraph DocPipeline["Document Pipeline"]
+        Parse["Parser\nPDF/DOCX/CSV/images"]
+        Chunk["Chunker\noverlapping text windows"]
+        Embed["Embedder\nOpenAI text-embedding-3-small"]
+        QdrantKB[("Qdrant\nkb_{id}")]
+    end
 
-    Stream -.->|"asyncio.create_task"| TitleGen["Title Generator<br/><i>fire-and-forget</i>"]
-    Stream -.->|"asyncio.create_task"| LTMem["Long-Term Memory Extractor<br/><i>fire-and-forget</i>"]
+    subgraph WebPipeline["Web Pipeline"]
+        Spider["Scrapy CortexSpider\nmultiprocessing.Process\nlogin-wall detection"]
+        WChunk["Chunker"]
+        WEmbed["Embedder"]
+        QdrantWC[("Qdrant\nwc_{id}")]
+    end
+
+    Celery --> DocPipeline
+    Celery --> WebPipeline
+
+    DocPipeline -.->|Redis PUBLISH kb_status| API
+    WebPipeline -.->|Redis PUBLISH wc_status| API
+    API -.->|SSE status stream| User
 
     subgraph Persistence
         PG[("PostgreSQL")]
@@ -190,7 +164,8 @@ graph TB
 
     API <--> PG
     Stream <--> Redis
-    Master <--> Langfuse["Langfuse Cloud<br/><i>prompts + traces</i>"]
+    A1 -->|dense+sparse search| QdrantKB
+    A2 -->|dense search| QdrantWC
 ```
 
 ---
@@ -201,44 +176,156 @@ Each user creates **workspaces**. A workspace is a collection of agents that col
 
 ```mermaid
 graph LR
-    subgraph Workspace ["Workspace (e.g. 'Sales Assistant')"]
-        MA["🔒 Master Agent<br/><i>plans execution<br/>not editable</i>"]
-        A1["Custom Agent 1<br/><i>ResearchAgent<br/>tools: web_search</i>"]
-        A2["Custom Agent 2<br/><i>EmailAgent<br/>tools: gmail_send_mail</i>"]
-        CA["🔒 Composer Agent<br/><i>synthesizes answer<br/>not editable</i>"]
+    subgraph Workspace["Workspace — Sales Assistant"]
+        MA["Master Agent\nplans execution\nnot editable"]
+        A1["ResearchAgent\ntools: web_search\nKB: product_docs\nWC: competitor_site"]
+        A2["EmailAgent\ntools: gmail_send_mail"]
+        CA["Composer Agent\nsynthesizes answer\nnot editable"]
     end
 
     Query["User query"] --> MA
-    MA -->|"plan"| A1
-    MA -->|"plan"| A2
-    A1 -->|"results"| CA
-    A2 -->|"results"| CA
-    CA -->|"SSE stream"| Answer["Streamed answer"]
+    MA -->|plan| A1
+    MA -->|plan| A2
+    A1 -->|results| CA
+    A2 -->|results| CA
+    CA -->|SSE stream| Answer["Streamed answer"]
 ```
 
-- **Master** and **Composer** are auto-created with every new workspace (`is_editable=false`)
-- Custom agents have: name, system prompt, LLM model + API key, tools
-- Agent names within a workspace are **unique** — Master references them by name in the plan
-- Same agent can appear multiple times in one plan with different runtime IDs (`research_1`, `research_2`)
+- **Master** and **Composer** auto-created with every workspace (`is_editable=false`)
+- Custom agents have: name, system prompt, LLM model + API key, tools, KB attachments, WC attachments
+- Agents can be assigned **Knowledge Bases** (file-indexed data) and **Website Collections** (crawled web data)
+- At chat time, `knowledge_base_search` and `collection_search` tools are **auto-injected** — agents don't need manual tool selection
+
+---
+
+## Knowledge Bases
+
+Users upload files → Celery ingests → chunks embedded and stored in Qdrant → agents query at runtime.
+
+### Ingestion Pipeline
+
+```mermaid
+flowchart TD
+    Upload["POST /knowledge-bases/upload\nPDF, DOCX, CSV, images, TXT, MD"] --> B2["Store raw file\nB2/S3 or local staging"]
+    B2 --> Task["Celery: ingest_document_task\nacks_late + max_retries=2"]
+    Task --> SetProc["DB: status=processing\nRedis PUBLISH kb_status:user_id"]
+
+    SetProc --> Parse["Parser\nPDF→pypdf, DOCX→python-docx\nCSV→pandas, image→GPT-4o vision"]
+    Parse --> Chunk["Chunker\nsize=1000 tokens, overlap=200\nCSV: 100 rows/chunk"]
+    Chunk --> Embed["Embedder\ntext-embedding-3-small, dim=1536\nbatch=96"]
+
+    Embed --> Qdrant["Qdrant collection: kb_{kb_id}\nDense vector + sparse BM25 text index\nPayload: doc_id, chunk_index, text, section"]
+    Qdrant --> Ready["DB: status=ready, chunk_count\nRedis PUBLISH ready → SSE update"]
+
+    Task -->|on_failure| Failed["DB: status=failed, error_message\nRedis PUBLISH failed → SSE update"]
+```
+
+### Retrieval at Chat Time
+
+```mermaid
+flowchart LR
+    Query["Agent task"] --> Embed2["embed_texts(query)"]
+    Embed2 --> Dense["Dense search\ntop_k=50, cosine similarity"]
+    Embed2 --> Sparse["Sparse search\nBM25 text index, top_k=50"]
+    Dense --> RRF["Reciprocal Rank Fusion\nk=60, merge + rerank"]
+    Sparse --> RRF
+    RRF --> Top["top_k=5 final chunks"]
+    Top --> LLM["Injected into agent context"]
+```
+
+### Supported File Types
+
+| Extension | Parser | Notes |
+|-----------|--------|-------|
+| `.pdf` | pypdf (text) + GPT-4o (images) | Text pages parsed directly; scanned/image PDFs use vision |
+| `.docx` / `.doc` | python-docx | Paragraphs + tables |
+| `.xlsx` / `.xls` | openpyxl | Each sheet chunked as CSV rows |
+| `.csv` | pandas | `KB_CSV_ROWS_PER_CHUNK` rows per chunk |
+| `.txt` / `.md` | plain text | UTF-8 |
+| `.png` / `.jpg` / `.jpeg` / `.webp` / `.gif` / `.bmp` | GPT-4o vision | Returns text description |
+
+---
+
+## Website Collections
+
+Users create collections → add URLs with crawl depth → trigger scrape → Scrapy crawls → text embedded → agents query at runtime.
+
+### Crawl Pipeline
+
+```mermaid
+flowchart TD
+    AddURL["POST /website-collections/{id}/urls\nurl + max_depth 1–5"] --> Pending["DB: crawl_status=pending"]
+    Pending --> Trigger["POST .../scrape\nor Scrape All"]
+    Trigger --> Task["Celery: crawl_website_task\nacks_late + max_retries=2"]
+    Task --> SetCrawl["DB: status=crawling\nRedis PUBLISH wc_status:user_id"]
+
+    SetCrawl --> Process["multiprocessing.Process\nCortexSpider — fresh Twisted reactor"]
+    Process --> JSONL["JSONL temp file\nnormal pages + login_blocked sentinels"]
+
+    JSONL --> LoginCheck{"Start URL\nlogin wall?"}
+    LoginCheck -->|Yes| LoginFail["ValueError login_required:\nDB: status=failed\nerror_message starts with login_required:\nUI shows Remove only"]
+    LoginCheck -->|No| Chunk2["Chunker + Embedder\ntext-embedding-3-small"]
+
+    Chunk2 --> QdrantWC["Qdrant: wc_{collection_id}\ndense vectors only\nPayload: url, title, depth, chunk_index"]
+    QdrantWC --> Ready2["DB: status=ready\npage_count + chunk_count + login_blocked_count\nRedis PUBLISH ready → SSE update"]
+
+    Task -->|on_failure| Failed2["DB: status=failed, error_message\nRedis PUBLISH failed → SSE update"]
+```
+
+### Login-Wall Detection
+
+The spider detects login pages and skips them (does not follow links from them):
+
+| Signal | Check |
+|--------|-------|
+| URL pattern | `/login`, `/signin`, `/sign-in`, `/auth`, `/sso`, `/oauth`, `?redirect=`, `?next=` |
+| HTTP status | `401` or `403` |
+| HTML content | `<input type="password">` present in first 3000 chars |
+| Text signals | "sign in to", "please log in", "login required", "access denied", "you must be logged in" |
+
+**UI behavior:**
+- `error_message.startsWith("login_required:")` → **Remove** button only (no Retry)
+- All other failures → **Retry** + Delete buttons
+- `login_blocked_count > 0` on ready URL → ⚠️ amber badge "N pages need login"
+
+### URL Status States
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: URL added
+    pending --> crawling: scrape triggered
+    crawling --> processing: spider finished, pages found
+    processing --> ready: chunks embedded in Qdrant
+    crawling --> failed: spider error / timeout
+    processing --> failed: embed error
+    ready --> crawling: re-scrape triggered
+    failed --> pending: retry triggered
+    failed --> [*]: Remove (login_required errors only)
+```
 
 ---
 
 ## Agent Builder
 
-`workspace.html` — drag-and-drop agent canvas.
+`workspace.html` — configure agents with tools, KB, and website collection attachments.
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  🔒 MASTER          [ResearchAgent]  [EmailAgent]  🔒 COMPOSER     │
-│  (locked)           drag to reorder                    (locked)    │
-├────────────────────────────────────────────────────────────────────┤
-│  Sidebar                                                           │
-│  ├── API Keys    [+ Add Key]  (auto-detects provider + models)     │
-│  └── Connectors  [Gmail ✓ Connected] [GitHub ✓] [Web Search 🔵]   │
-└────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  MASTER (locked)     [ResearchAgent]     [EmailAgent]     COMPOSER (locked)    │
+│                                                                                 │
+│  Add/Edit Agent Modal:                                                          │
+│  ├── Name + System Prompt + Model                                               │
+│  ├── Tools           [ ] web_search  [ ] gmail_send_mail 🔒  [ ] github_issues │
+│  ├── Knowledge Bases [ ] product_docs  [ ] support_wiki                        │
+│  └── Website Cols    [ ] competitor_site  [ ] docs_site                        │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Sidebar                                                                        │
+│  ├── API Keys    [+ Add Key]  (auto-detects provider + models)                  │
+│  └── Connectors  [Gmail ✓ Connected]  [GitHub ✓]  [Web Search Built-in]       │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**AI Prompt Generator:** Describe what an agent should do → backend calls LiteLLM → returns generated system prompt + recommended tools from user's connected connectors.
+Agent cards show badges: `🔧 tool_name`, `📚 kb_name` (purple), `🌐 wc_name` (green)
 
 ---
 
@@ -248,15 +335,13 @@ graph LR
 
 ### Pattern 1: Parallel (no dependencies)
 
-> *"Search my emails AND look up latest news on our competitor"*
-
 ```mermaid
 graph LR
     Master --> Orch
 
-    subgraph "Stage 1 — parallel asyncio.gather"
-        A["EmailAgent<br/><i>gmail_read_mail</i>"]
-        B["WebAgent<br/><i>web_search</i>"]
+    subgraph parallel["Stage 1 — asyncio.gather"]
+        A["EmailAgent\ngmail_read_mail"]
+        B["WebAgent\nweb_search"]
     end
 
     Orch --> A & B
@@ -267,22 +352,20 @@ graph LR
 
 ### Pattern 2: Sequential (linear chain)
 
-> *"Find sales data, analyze it with Python, email the report"*
-
 ```mermaid
 graph LR
     Master --> Orch
 
-    subgraph "Stage 1"
-        A["DataAgent<br/><i>gmail_read_mail</i>"]
+    subgraph s1["Stage 1"]
+        A["DataAgent\ngmail_read_mail"]
     end
 
-    subgraph "Stage 2"
-        B["AnalystAgent<br/><i>uses A output</i>"]
+    subgraph s2["Stage 2"]
+        B["AnalystAgent\nuses A output"]
     end
 
-    subgraph "Stage 3"
-        C["EmailAgent<br/><i>gmail_send_mail<br/>uses B output</i>"]
+    subgraph s3["Stage 3"]
+        C["EmailAgent\ngmail_send_mail\nuses B output"]
     end
 
     Orch --> A --> B --> C --> Composer
@@ -293,19 +376,17 @@ graph LR
 
 ### Pattern 3: Diamond (fan-out + fan-in)
 
-> *"Search internal docs AND web, then synthesize a comparison"*
-
 ```mermaid
 graph TD
     Master --> Orch
 
-    subgraph "Stage 1 — parallel"
-        A["DocAgent"]
-        B["WebAgent<br/><i>web_search</i>"]
+    subgraph p1["Stage 1 — parallel"]
+        A["DocAgent\nknowledge_base_search"]
+        B["WebAgent\ncollection_search"]
     end
 
-    subgraph "Stage 2 — waits for both"
-        C["AnalystAgent<br/><i>receives A+B outputs</i>"]
+    subgraph p2["Stage 2 — waits for both"]
+        C["AnalystAgent\nreceives A+B outputs"]
     end
 
     Orch --> A & B
@@ -327,8 +408,8 @@ flowchart TD
     Dec --> Enq["Enqueue newly zero-in-degree steps"]
     Enq --> Loop
     Loop -->|Yes| Check{"Remaining nodes?"}
-    Check -->|"Yes → cycle!"| Err["CircularDependencyError → error SSE"]
-    Check -->|No| Done["Return List[List[ResolvedAgentTask]]"]
+    Check -->|"Yes — cycle!"| Err["CircularDependencyError → error SSE"]
+    Check -->|No| Done["Return stages list"]
 
     style Err fill:#f44336,color:#fff
     style Done fill:#4CAF50,color:#fff
@@ -341,26 +422,35 @@ flowchart TD
 `POST /chat/stream` — all real-time communication via Server-Sent Events.
 
 ```
-event: plan          {"execution_order": "Master → ResearchAgent[web_search] → WriterAgent → Composer"}
-event: status        {"phase": "planning"|"executing"|"composing", "agent_name": "ResearchAgent"}
-event: agent_result  {"agent_id": "...", "agent_name": "...", "done": true, "error": null}
+event: plan          {"execution_order": "Master → ResearchAgent[knowledge_base_search] → Composer"}
+event: status        {"phase": "planning|executing|composing", "agent_name": "ResearchAgent"}
 event: hitl_required {"request_id": "...", "agent_name": "...", "tool_names": ["gmail_send_mail"], "timeout_seconds": 120}
-event: hitl_approved {"request_id": "..."}
+event: hitl_approved {"request_id": "...", "instructions": "..."}
 event: hitl_denied   {"request_id": "..."}
 event: compacting    {"message": "Summarising earlier conversation..."}
-event: token         {"text": "..."}          ← streamed char-by-char from Composer
+event: token         {"text": "..."}
+event: artifact      {"type": "code|table|chart", "title": "...", "content": "..."}
 event: suggestions   {"questions": ["...", "...", "..."]}
-event: done          {"total_ms": ..., "tokens": ..., "conversation_id": "..."}
+event: done          {"total_ms": ..., "conversation_id": "..."}
 event: error         {"message": "..."}
 ```
 
-**Frontend uses `fetch` + `ReadableStream` (not `EventSource`)** — required because `EventSource` can't send JWT auth headers.
+**KB/WC status SSE** (separate streams):
+```
+GET /knowledge-bases/status/stream?token=...
+GET /website-collections/status/stream?token=...
+
+data: {"kb_id|collection_id": "...", "url_id": "...", "status": "crawling|processing|ready|failed",
+       "page_count": 12, "chunk_count": 48, "login_blocked_count": 2}
+```
+
+Frontend uses `EventSource` for KB/WC status streams. Chat uses `fetch` + `ReadableStream` (EventSource can't send JWT auth headers).
 
 ---
 
 ## Human-in-the-Loop (HITL)
 
-Tools marked `requires_hitl=True` pause execution and ask the user to approve before the tool runs. HITL works **across multiple server workers** via Redis pub/sub — no sticky sessions needed.
+Tools marked `requires_hitl=True` pause execution and ask the user to approve before the tool runs. Works **across multiple server workers** via Redis pub/sub.
 
 ```mermaid
 sequenceDiagram
@@ -371,27 +461,21 @@ sequenceDiagram
 
     SSE->>SSE: Agent needs gmail_send_mail (requires_hitl=True)
     SSE->>Redis: Subscribe hitl:{request_id}
-    SSE->>User: event: hitl_required { request_id, tool_names, timeout=120s }
+    SSE->>User: event: hitl_required
 
     alt User approves
-        User->>HITL: { request_id, approved: true, instructions: "only to john@" }
-        HITL->>Redis: PUBLISH hitl:{request_id} {approved: true, instructions: ...}
+        User->>HITL: {approved: true, instructions: "only to john@"}
+        HITL->>Redis: PUBLISH hitl:{request_id} {approved: true}
         Redis->>SSE: Message received → resume
         SSE->>User: event: hitl_approved
     else User denies
-        User->>HITL: { request_id, approved: false }
-        Redis->>SSE: Message received
+        User->>HITL: {approved: false}
         SSE->>User: event: hitl_denied
         SSE->>SSE: AgentOutput.error = "HITL denied by user"
     else Timeout (120s)
-        SSE->>SSE: Auto-deny, Composer synthesizes without that agent
+        SSE->>SSE: Auto-deny, Composer notes missing output
     end
 ```
-
-**HITL chat.html behavior:**
-- Popup appears on `hitl_required` event with tool names, instructions textarea, countdown timer
-- Approve / Deny buttons
-- `pendingHitlId` captured before clearing popup to prevent null race
 
 ---
 
@@ -399,53 +483,41 @@ sequenceDiagram
 
 ### Short-Term (per conversation)
 
-Sliding window of `SHORT_TERM_MEMORY_WINDOW` (default 10) messages. When window overflows, first `SHORT_TERM_COMPRESS_FIRST_N` (default 4) messages are compressed via LLM into a summary stored in `conversation_summaries`.
+Sliding window of `SHORT_TERM_MEMORY_WINDOW` (default 10) messages. When window overflows, the first `SHORT_TERM_COMPRESS_FIRST_N` messages are LLM-compressed into a summary.
 
 ```mermaid
 flowchart TD
-    Msg["New message added<br/><i>non-system count > 10?</i>"]
+    Msg["New message — count > 10?"]
     Msg -->|No| Window["Return last 10 messages"]
-    Msg -->|Yes| Compress["LiteLLM call<br/><i>Langfuse prompt: memory_compression<br/>response_format=MemoryCompressionOutput</i>"]
-    Compress --> Replace["messages[0:4] → [summary_msg] + messages[4:]"]
+    Msg -->|Yes| Compress["LiteLLM: memory_compression prompt\nresponse_format=MemoryCompressionOutput"]
+    Compress --> Replace["messages[0:4] → summary_msg + messages[4:]"]
     Replace --> Persist["INSERT conversation_summaries"]
-    Persist --> SSE["event: compacting → frontend banner"]
+    Persist --> SSE2["event: compacting → frontend banner"]
     Replace --> Window
 ```
 
-**Cold start:** `MemoryManager.load(summaries, recent_messages)` seeds from DB on first query of a conversation.
-
 ### Long-Term (per user)
 
-After every response, a **fire-and-forget** `asyncio.create_task` runs an LLM that extracts personal facts from the exchange. Upserted to `user_long_term_memory`. Loaded at start of every query and injected into all agent contexts.
+After every response, an async fire-and-forget task extracts personal facts and preferences. Loaded at start of every query and injected into all agent contexts.
 
 ```mermaid
 flowchart LR
-    Response["Assistant response done"] --> Task["asyncio.create_task<br/><i>fire-and-forget</i>"]
-    Task --> LLM["LiteLLM<br/><i>Langfuse: long_term_memory_extraction<br/>response_format=LongTermMemoryExtraction</i>"]
-    LLM -->|"should_store=false"| NoOp["Skip"]
-    LLM -->|"should_store=true"| Upsert["UPSERT user_long_term_memory<br/><i>critical_facts + preferences</i>"]
-    Upsert --> NextQuery["Available in all agents<br/>next conversation"]
+    Response["Assistant response done"] --> Task["asyncio.create_task\nfire-and-forget"]
+    Task --> LLM2["LiteLLM: long_term_memory_extraction\nresponse_format=LongTermMemoryExtraction"]
+    LLM2 -->|should_store=false| NoOp["Skip"]
+    LLM2 -->|should_store=true| Upsert["UPSERT user_long_term_memory\ncritical_facts + preferences"]
+    Upsert --> NextQuery["Available in all agents\nnext conversation"]
 ```
-
-**What gets extracted:**
-
-| Field | Example trigger |
-|-------|----------------|
-| `critical_facts.user_name` | *"I'm Vinay"* |
-| `critical_facts.company_name` | *"I work at Acme Corp"* |
-| `critical_facts.job_title` | *"I'm a product manager"* |
-| `preferences.tone` | *"Keep answers concise"* |
-| `preferences.detail_level` | *"Just give me the summary"* |
 
 ---
 
 ## Tool System
 
-`tools/registry.py` — singleton `ToolRegistry`. Auto-discovers all `connectors/*/tools.py` files at startup.
+`tools/registry.py` — singleton `ToolRegistry`. Auto-discovers all `connectors/*/tools.py` at startup.
 
 ```python
-@tool(description="Search the web", requires_hitl=False, connector="")
-async def web_search(query: str, num_results: int = 5) -> dict:
+@tool(description="Search scraped website collections", requires_hitl=False, connector="__website__")
+async def collection_search(query: str, collection_ids: list, user_id: str, top_k: int = 5) -> dict:
     ...
 ```
 
@@ -453,40 +525,45 @@ async def web_search(query: str, num_results: int = 5) -> dict:
 |-----------|---------|
 | `description` | Injected into Master Agent prompt so it knows what the tool does |
 | `requires_hitl` | `True` → pauses execution, shows HITL popup |
-| `connector` | Non-empty → inject OAuth tokens from `connector_tokens_db[slug]` at call time |
+| `connector` | Non-empty → inject tokens from `connector_tokens_db[slug]` at call time |
 
-**OAuth token injection:** Connector tools receive `access_token` (and `instance_url` for Salesforce) server-side, injected from the user's decrypted `connector_instances` row. The LLM never sees these credentials — they're added in `_execute_tool_calls` after the LLM decides to call the tool.
+**Server-injected parameters** (never sent to LLM):
+
+| Parameter | Injected by | Source |
+|-----------|-------------|--------|
+| `access_token`, `instance_url` | OAuth connector slug match | `connector_instances.encrypted_tokens` |
+| `kb_ids`, `user_id` | `connector="__kb__"` | `agent_knowledge_bases` rows |
+| `collection_ids`, `user_id` | `connector="__website__"` | `agent_website_collections` rows |
 
 ---
 
 ## Connectors
 
-### OAuth2 Connectors (per-user)
-
-Users connect their accounts once; tokens are encrypted (AES-256-GCM) and reused across all workspaces.
+### OAuth2 Connectors
 
 | Connector | Auth | Tools |
 |-----------|------|-------|
-| Gmail | OAuth2 (Google) | `gmail_read_mail`, `gmail_send_mail` *(HITL)*, `gmail_create_draft`, `gmail_list_labels` |
-| GitHub | OAuth2 | `github_list_repos`, `github_list_issues`, `github_create_issue` *(HITL)*, `github_list_pull_requests` |
-| Google Calendar | OAuth2 (Google) | `calendar_list_events`, `calendar_create_event` *(HITL)*, `calendar_delete_event` *(HITL)* |
-| Salesforce | OAuth2 | `salesforce_query`, `salesforce_get_record`, `salesforce_create_record` *(HITL)*, `salesforce_update_record` *(HITL)* |
+| Gmail | OAuth2 (Google) | `gmail_read_mail`, `gmail_send_mail` (HITL), `gmail_create_draft`, `gmail_list_labels` |
+| GitHub | OAuth2 | `github_list_repos`, `github_list_issues`, `github_create_issue` (HITL), `github_list_pull_requests` |
+| Google Calendar | OAuth2 (Google) | `calendar_list_events`, `calendar_create_event` (HITL), `calendar_delete_event` (HITL) |
+| Salesforce | OAuth2 | `salesforce_query`, `salesforce_get_record`, `salesforce_create_record` (HITL), `salesforce_update_record` (HITL) |
 
-**OAuth CSRF protection:** State stored in Redis with 600s TTL. `getdel` on callback — replay attacks rejected.
+### API-Key Connectors (always available)
 
-### API-Key Connectors (system-level, always available)
+| Connector | Tools |
+|-----------|-------|
+| Web Search (Tavily) | `web_search`, `web_search_news`, `fetch_url` |
 
-| Connector | Auth | Tools |
-|-----------|------|-------|
-| Web Search (Tavily) | `TAVILY_API_KEY` in settings | `web_search`, `web_search_news`, `fetch_url` |
+### Implicit Connectors (auto-injected per agent)
 
-Tavily tools use `connector=""` — no token injection. Key read directly from `settings.TAVILY_API_KEY`. No "Connect" button in UI — shown as **Built-in**.
+| Connector slug | Tool | Injection source |
+|----------------|------|-----------------|
+| `__kb__` | `knowledge_base_search` | Agent's assigned knowledge bases |
+| `__website__` | `collection_search` | Agent's assigned website collections |
 
 ---
 
 ## LiteLLM Multi-Provider Keys
-
-Users add their own API keys. The system auto-detects the provider from the key prefix and fetches available models.
 
 | Prefix | Provider |
 |--------|----------|
@@ -496,21 +573,18 @@ Users add their own API keys. The system auto-detects the provider from the key 
 | `gsk_` | Groq |
 | `AP` | Mistral |
 
-Model discovery runs in `asyncio.get_running_loop().run_in_executor(None, ...)` (blocking HTTP call off the event loop). Models stored as JSONB in `user_api_keys.available_models`. Keys encrypted with AES-256-GCM, never returned after creation.
-
 ---
 
 ## Authentication & Security
 
 | Mechanism | Detail |
 |-----------|--------|
-| Password hashing | **argon2-cffi** (`argon2.PasswordHasher`), not bcrypt |
-| Rehash on login | `check_needs_rehash()` — upgrades old params transparently |
-| JWT | `python-jose`, HS256, 15min access + 7d refresh |
-| Refresh tokens | SHA-256 hash stored in DB, raw token to client |
+| Password hashing | argon2-cffi, `check_needs_rehash()` on login |
+| JWT | python-jose, HS256, 15min access + 7d refresh |
+| Refresh tokens | SHA-256 hash in DB, raw token to client |
 | Logout blacklist | Access token hash in Redis with TTL = remaining validity |
-| Ownership | Every manager method filters by `user_id` from JWT — cross-user access impossible |
-| Encryption key | `ENCRYPTION_KEY` must base64-decode to ≥ 32 bytes; validated at startup |
+| Encryption | AES-256-GCM for connector tokens + API keys |
+| Ownership | Every manager method filters by `user_id` from JWT |
 
 ---
 
@@ -523,7 +597,7 @@ Model discovery runs in `asyncio.get_running_loop().run_in_executor(None, ...)` 
 | `POST` | `/auth/register` | Public | Returns access + refresh tokens |
 | `POST` | `/auth/login` | Public | Returns access + refresh tokens |
 | `POST` | `/auth/refresh` | Bearer | Returns new access token |
-| `POST` | `/auth/logout` | Bearer | Blacklists access token + revokes refresh |
+| `POST` | `/auth/logout` | Bearer | Blacklists access token |
 
 ### Workspaces — `/workspaces`
 
@@ -531,47 +605,66 @@ Model discovery runs in `asyncio.get_running_loop().run_in_executor(None, ...)` 
 |--------|------|-------|
 | `GET` | `/workspaces` | Cursor paginated |
 | `POST` | `/workspaces` | Auto-creates Master + Composer agents |
-| `GET` | `/workspaces/{id}` | Detail + agents |
-| `PUT` | `/workspaces/{id}` | Name / description |
+| `GET` | `/workspaces/{id}` | |
+| `PUT` | `/workspaces/{id}` | |
 | `DELETE` | `/workspaces/{id}` | Soft delete |
 
 ### Agents — `/agents`
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/workspaces/{id}/agents` | List |
-| `POST` | `/workspaces/{id}/agents` | CUSTOM type only; enforces name uniqueness |
-| `PUT` | `/agents/{id}` | Guards `is_editable=true` |
-| `DELETE` | `/agents/{id}` | Soft delete; blocks Master/Composer |
+| `GET` | `/workspaces/{id}/agents` | Returns `kb_ids`, `collection_ids` per agent |
+| `POST` | `/workspaces/{id}/agents` | Accepts `kb_ids`, `collection_ids` |
+| `PUT` | `/agents/{id}` | Updates KB/WC assignments via junction tables |
+| `DELETE` | `/agents/{id}` | Soft delete |
 | `POST` | `/workspaces/{id}/agents/prompt-generate` | AI prompt + tool suggestions |
+
+### Knowledge Bases — `/knowledge-bases`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/knowledge-bases` | Create KB |
+| `GET` | `/knowledge-bases` | List user's KBs |
+| `DELETE` | `/knowledge-bases/{kb_id}` | Delete KB + Qdrant collection |
+| `POST` | `/knowledge-bases/{kb_id}/upload` | Upload files (multipart) — enqueues Celery task per file |
+| `GET` | `/knowledge-bases/{kb_id}/documents` | List documents with status |
+| `DELETE` | `/knowledge-bases/{kb_id}/documents/{doc_id}` | Delete doc + Qdrant chunks |
+| `POST` | `/knowledge-bases/{kb_id}/documents/{doc_id}/retry` | Re-queue failed document |
+| `GET` | `/knowledge-bases/status/stream` | SSE — `?token=` auth |
+
+### Website Collections — `/website-collections`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/website-collections` | Create collection |
+| `GET` | `/website-collections` | List user's collections |
+| `DELETE` | `/website-collections/{collection_id}` | Delete + Qdrant collection |
+| `POST` | `/website-collections/{collection_id}/urls` | Add URL — body: `{url, max_depth}` |
+| `GET` | `/website-collections/{collection_id}/urls` | List URLs with crawl status |
+| `DELETE` | `/website-collections/{collection_id}/urls/{url_id}` | Remove URL + Qdrant chunks |
+| `POST` | `/website-collections/{collection_id}/urls/{url_id}/scrape` | Trigger crawl for one URL |
+| `POST` | `/website-collections/{collection_id}/scrape` | Trigger crawl for all URLs |
+| `POST` | `/website-collections/{collection_id}/urls/{url_id}/retry` | Re-queue failed URL |
+| `GET` | `/website-collections/status/stream` | SSE — `?token=` auth — registered before `/{collection_id}` |
 
 ### Connectors — `/connectors`
 
-| Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/connectors/definitions` | All seeded definitions (includes `auth_type`) |
-| `GET` | `/connectors/instances` | User's connected instances |
-| `GET` | `/connectors/{slug}/auth-url` | Start OAuth (oauth2 only) |
-| `GET` | `/connectors/callback` | OAuth redirect callback |
-| `DELETE` | `/connectors/instances/{id}` | Revoke + delete |
+| Method | Path |
+|--------|------|
+| `GET` | `/connectors/definitions` |
+| `GET` | `/connectors/instances` |
+| `GET` | `/connectors/{slug}/auth-url` |
+| `GET` | `/connectors/callback` |
+| `DELETE` | `/connectors/instances/{id}` |
 
 ### API Keys — `/api-keys`
 
-| Method | Path | Notes |
-|--------|------|-------|
-| `POST` | `/api-keys` | Provider detection + model listing |
-| `GET` | `/api-keys` | Masked keys |
-| `GET` | `/api-keys/{id}/models` | Available models |
-| `DELETE` | `/api-keys/{id}` | |
-
-### Personas — `/personas`
-
 | Method | Path |
 |--------|------|
-| `POST` | `/personas` |
-| `GET` | `/personas` |
-| `PUT` | `/personas/{id}` |
-| `DELETE` | `/personas/{id}` |
+| `POST` | `/api-keys` |
+| `GET` | `/api-keys` |
+| `GET` | `/api-keys/{id}/models` |
+| `DELETE` | `/api-keys/{id}` |
 
 ### Chat — `/chat`
 
@@ -580,20 +673,17 @@ Model discovery runs in `asyncio.get_running_loop().run_in_executor(None, ...)` 
 | `POST` | `/chat/conversations` | Create for workspace |
 | `GET` | `/chat/conversations` | Cursor paginated |
 | `GET` | `/chat/conversations/{id}/messages` | History |
-| `POST` | `/chat/stream` | **SSE** — main execution endpoint |
+| `POST` | `/chat/stream` | Main SSE execution endpoint |
 | `POST` | `/hitl/respond` | Approve/deny → Redis publish |
 
-### Admin — `/admin`
+### Personas, Admin
 
-| Method | Path | Auth |
-|--------|------|------|
-| `GET` | `/admin/users` | Admin role only |
-| `GET` | `/admin/workspaces` | Admin role only |
-| `GET` | `/admin/conversations` | Admin role only |
-| `GET` | `/admin/stats` | Admin role only |
+| Method | Path |
+|--------|------|
+| `POST/GET/PUT/DELETE` | `/personas`, `/personas/{id}` |
+| `GET` | `/admin/users`, `/admin/workspaces`, `/admin/conversations`, `/admin/stats` |
 
 ---
-
 ## Database Schema
 
 ```mermaid
@@ -602,16 +692,8 @@ erDiagram
         UUID id PK
         VARCHAR email UK
         VARCHAR hashed_password
-        ENUM role "user|admin"
+        ENUM role
         BOOL is_active
-    }
-
-    refresh_tokens {
-        UUID id PK
-        UUID user_id FK
-        VARCHAR token_hash
-        TIMESTAMPTZ expires_at
-        TIMESTAMPTZ revoked_at
     }
 
     user_api_keys {
@@ -636,7 +718,7 @@ erDiagram
         UUID user_id FK
         VARCHAR name
         TEXT system_prompt
-        ENUM agent_type "MASTER|CUSTOM|COMPOSER"
+        ENUM agent_type
         VARCHAR model_id
         UUID api_key_id FK
         INT display_order
@@ -645,29 +727,55 @@ erDiagram
         TIMESTAMPTZ deleted_at
     }
 
-    connector_definitions {
-        UUID id PK
-        VARCHAR slug UK
-        VARCHAR display_name
-        ENUM auth_type "oauth2|apikey"
-        JSONB tools
-        VARCHAR icon
-    }
-
-    connector_instances {
-        UUID id PK
-        UUID user_id FK
-        UUID definition_id FK
-        TEXT encrypted_tokens
-        VARCHAR account_label
-        ENUM status "active|expired|revoked"
-    }
-
-    personas {
+    knowledge_bases {
         UUID id PK
         UUID user_id FK
         VARCHAR name
-        TEXT system_prompt
+        TEXT description
+        INT doc_count
+    }
+
+    kb_documents {
+        UUID id PK
+        UUID kb_id FK
+        UUID user_id FK
+        VARCHAR filename
+        ENUM processing_status
+        INT chunk_count
+        TEXT error_message
+        TIMESTAMPTZ processed_at
+    }
+
+    agent_knowledge_bases {
+        UUID agent_id PK
+        UUID kb_id PK
+    }
+
+    website_collections {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR name
+        TEXT description
+        INT url_count
+    }
+
+    website_urls {
+        UUID id PK
+        UUID collection_id FK
+        UUID user_id FK
+        TEXT url
+        INT max_depth
+        ENUM crawl_status
+        INT page_count
+        INT chunk_count
+        INT login_blocked_count
+        TEXT error_message
+        TIMESTAMPTZ last_crawled_at
+    }
+
+    agent_website_collections {
+        UUID agent_id PK
+        UUID collection_id PK
     }
 
     conversations {
@@ -680,20 +788,9 @@ erDiagram
     messages {
         UUID id PK
         UUID conversation_id FK
-        ENUM role "user|assistant|system"
+        ENUM role
         TEXT content
-        JSONB token_details
-        FLOAT total_cost_usd
         INT latency_ms
-        VARCHAR langfuse_trace_id
-    }
-
-    conversation_summaries {
-        UUID id PK
-        UUID conversation_id FK
-        TEXT summary
-        INT message_range_start
-        INT message_range_end
     }
 
     hitl_requests {
@@ -701,55 +798,74 @@ erDiagram
         UUID conversation_id FK
         VARCHAR agent_id
         JSONB tool_names
-        ENUM status "pending|approved|denied|timed_out"
+        ENUM status
         TEXT user_instructions
         TIMESTAMPTZ expires_at
     }
 
     user_long_term_memory {
         UUID id PK
-        UUID user_id FK UK
+        UUID user_id FK "UK"
         JSONB critical_facts
         JSONB preferences
     }
 
-    users ||--o{ refresh_tokens : has
     users ||--o{ user_api_keys : has
     users ||--o{ workspaces : owns
-    users ||--o{ connector_instances : has
-    users ||--o{ personas : has
+    users ||--o{ knowledge_bases : owns
+    users ||--o{ website_collections : owns
     users ||--|| user_long_term_memory : has
     workspaces ||--o{ agents : contains
     workspaces ||--o{ conversations : has
+    agents }o--o{ knowledge_bases : uses
+    agents }o--o{ website_collections : uses
+    agents ||--o{ agent_knowledge_bases : has
+    agents ||--o{ agent_website_collections : has
+    knowledge_bases ||--o{ kb_documents : contains
+    knowledge_bases ||--o{ agent_knowledge_bases : linked_via
+    website_collections ||--o{ website_urls : contains
+    website_collections ||--o{ agent_website_collections : linked_via
     conversations ||--o{ messages : has
-    conversations ||--o{ conversation_summaries : has
     conversations ||--o{ hitl_requests : has
-    connector_definitions ||--o{ connector_instances : instantiated_by
 ```
+---
+
+## Celery Background Tasks
+
+| Task | Module | Max Retries | Timeout |
+|------|--------|-------------|---------|
+| `ingest_document_task` | `document_pipeline.tasks` | 2 | `WC_CRAWL_TIMEOUT_SECONDS + 60` |
+| `crawl_website_task` | `web_pipeline.tasks` | 2 | `WC_CRAWL_TIMEOUT_SECONDS + 60` (630s) |
+
+Both tasks:
+- `acks_late=True` — message re-queued if worker dies mid-task
+- `task_reject_on_worker_lost=True` — nack on worker crash
+- `ValueError` = non-retriable (missing record, login_required) — re-raised without retry
+- All other exceptions → `self.retry(exc=exc)` up to `max_retries`
+- `on_failure` handler → DB `status=failed` + Redis PUBLISH → SSE status update
 
 ---
 
 ## Retry & Resilience
 
-All LLM calls, external HTTP, and Redis operations use `tenacity`. All integers come from `config/settings.py` — no magic numbers in code.
+All LLM calls and Redis operations use `tenacity`. Settings from `config/settings.py` — no magic numbers.
 
 ```python
-# LLM / HTTP
+# LLM calls
 @retry(
-    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),          # default 3
+    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),       # default 3
     wait=wait_exponential_jitter(
-        initial=settings.LLM_RETRY_WAIT_MIN,                    # 1.0s
-        max=settings.LLM_RETRY_WAIT_MAX,                        # 30.0s
-        jitter=settings.LLM_RETRY_JITTER,                       # 2.0s
+        initial=settings.LLM_RETRY_WAIT_MIN,                 # 1.0s
+        max=settings.LLM_RETRY_WAIT_MAX,                     # 30.0s
+        jitter=settings.LLM_RETRY_JITTER,                    # 2.0s
     ),
-    retry=retry_if_exception(_is_retriable),                    # rate/timeout/5xx
-    reraise=True,
+    retry=retry_if_exception(_is_retriable),                 # rate/timeout/5xx
 )
 
-# Redis
+# Redis ops
 @retry(
-    stop=stop_after_attempt(settings.REDIS_MAX_RETRIES),        # default 2
-    wait=wait_fixed(settings.REDIS_RETRY_WAIT_FIXED),           # 0.5s
+    stop=stop_after_attempt(settings.REDIS_MAX_RETRIES),     # default 2
+    wait=wait_fixed(settings.REDIS_RETRY_WAIT_FIXED),        # 0.5s
 )
 ```
 
@@ -757,55 +873,97 @@ All LLM calls, external HTTP, and Redis operations use `tenacity`. All integers 
 
 ## All Configuration Settings
 
-`config/settings.py` — pydantic-settings, loaded from `.env`.
+`config/settings.py` — pydantic-settings loaded from `.env`.
+
+### Core
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `ENVIRONMENT` | `"dev"` | `"dev"` \| `"prod"` |
-| `DEFAULT_MODEL` | `"gpt-4o"` | Fallback model when agent has no key |
-| `SHORT_TERM_MEMORY_WINDOW` | `10` | Max messages in sliding window |
-| `SHORT_TERM_COMPRESS_FIRST_N` | `4` | Messages compressed when window full |
-| `ENABLE_SUGGESTIONS` | `true` | Follow-up question chips after answer |
-| `HITL_TIMEOUT_SECONDS` | `120` | Auto-deny HITL after this long |
-| `TOKEN_BUDGET_ENABLED` | `true` | Daily/monthly token limits |
-| `USER_DAILY_TOKEN_BUDGET` | `100,000` | Per-user daily limit |
-| `USER_MONTHLY_TOKEN_BUDGET` | `2,000,000` | Per-user monthly limit |
-| `LLM_MAX_RETRIES` | `3` | Tenacity attempts for LLM calls |
-| `LLM_RETRY_WAIT_MIN` | `1.0` | Min backoff (seconds) |
-| `LLM_RETRY_WAIT_MAX` | `30.0` | Max backoff (seconds) |
-| `LLM_RETRY_JITTER` | `2.0` | Jitter added to backoff |
-| `HTTP_MAX_RETRIES` | `3` | Tenacity attempts for external HTTP |
-| `REDIS_MAX_RETRIES` | `2` | Tenacity attempts for Redis ops |
-| `REDIS_RETRY_WAIT_FIXED` | `0.5` | Fixed wait between Redis retries |
-| `LANGFUSE_PROMPT_CACHE_TTL` | `300` | Seconds to cache Langfuse prompts |
+| `ENVIRONMENT` | `dev` | `dev` = debug logging, open CORS, Swagger; `prod` = restricted |
+| `DEFAULT_MODEL` | `gpt-4o` | Fallback model when agent has no key |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | Async PostgreSQL URL |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis for HITL + OAuth + budget |
+| `CELERY_BROKER_URL` | `redis://localhost:6379/1` | Celery broker + backend |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant vector database |
+
+### Auth & Security
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `JWT_SECRET` | — | HS256 signing key |
+| `ENCRYPTION_KEY` | — | AES-256-GCM key, base64url, ≥ 32 bytes |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token TTL |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token TTL |
-| `CORS_ORIGINS` | `[]` | Allowed origins in prod (dev uses `*`) |
-| `TAVILY_API_KEY` | `""` | Tavily web search (optional) |
+| `CORS_ORIGINS` | `[]` | Prod CORS whitelist |
+
+### Knowledge Base
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `KB_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `KB_EMBEDDING_DIMS` | `1536` | Vector dimensions |
+| `KB_EMBED_BATCH_SIZE` | `96` | Texts per embedding batch |
+| `KB_CHUNK_SIZE` | `1000` | Tokens per chunk |
+| `KB_CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `KB_CSV_ROWS_PER_CHUNK` | `100` | CSV rows per chunk |
+| `KB_STAGING_DIR` | `./staging` | Local file staging path |
+| `KB_TOP_K_DENSE` | `50` | Dense search candidates |
+| `KB_TOP_K_SPARSE` | `50` | Sparse (BM25) search candidates |
+| `KB_TOP_K_RRF` | `20` | After RRF merge |
+| `KB_TOP_K_FINAL` | `5` | Final chunks returned to agent |
+| `KB_RRF_K` | `60` | RRF rank constant |
+| `KB_MAX_FILES_PER_UPLOAD` | `50` | Max files per upload request |
+| `KB_MAX_FILE_SIZE_MB` | `100` | Max single file size |
+
+### Website Collections
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `WC_MAX_URLS_PER_COLLECTION` | `50` | URL limit per collection |
+| `WC_MAX_DEPTH` | `5` | Max crawl depth |
+| `WC_CRAWL_TIMEOUT_SECONDS` | `600` | Spider subprocess timeout |
+| `WC_MAX_PAGES_PER_URL` | `500` | Max pages crawled per URL |
+| `WC_CONCURRENT_REQUESTS` | `8` | Scrapy concurrent requests |
+| `WC_DOWNLOAD_TIMEOUT` | `30` | Per-request timeout (seconds) |
+| `WC_OBEY_ROBOTS` | `true` | Respect robots.txt |
+| `WC_USER_AGENT` | `CortexBot/1.0` | Crawler user agent |
+| `WC_TOP_K_DENSE` | `50` | Dense search candidates |
+| `WC_TOP_K_FINAL` | `5` | Final chunks returned to agent |
+
+### Memory & Features
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `SHORT_TERM_MEMORY_WINDOW` | `10` | Sliding window size |
+| `SHORT_TERM_COMPRESS_FIRST_N` | `4` | Messages compressed when full |
+| `ENABLE_SUGGESTIONS` | `true` | Follow-up question chips |
+| `HITL_TIMEOUT_SECONDS` | `120` | Auto-deny HITL after |
+| `TOKEN_BUDGET_ENABLED` | `true` | Daily/monthly limits |
+| `USER_DAILY_TOKEN_BUDGET` | `100000` | Per-user daily limit |
+| `USER_MONTHLY_TOKEN_BUDGET` | `2000000` | Per-user monthly limit |
+
+### Storage (B2 / S3)
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `B2_ENDPOINT` | `""` | Backblaze B2 or S3 endpoint |
+| `B2_REGION` | `us-east-005` | Region |
+| `B2_ACCESS_KEY_ID` | `""` | Access key |
+| `B2_SECRET_ACCESS_KEY` | `""` | Secret key |
+| `B2_BUCKET` | `""` | Bucket name |
+| `B2_PRESIGN_EXPIRY` | `300` | Presigned URL TTL (seconds) |
 
 ---
 
 ## Observability
 
-All LiteLLM calls are auto-traced to Langfuse via `CallbackHandler` registered at startup:
+All LiteLLM calls auto-traced to Langfuse via `CallbackHandler` at startup. Per-call metadata for trace grouping:
 
 ```python
-langfuse_handler = CallbackHandler(public_key=..., secret_key=..., host=...)
-litellm.callbacks = [langfuse_handler]
+metadata={"trace_name": "dynamic_agent_ResearchAgent", "trace_session_id": str(conversation_id)}
 ```
 
-Per-call metadata passed for trace grouping:
-
-```python
-await litellm.acompletion(..., metadata={
-    "trace_name": "master_agent",
-    "trace_session_id": str(conversation_id),
-    "trace_user_id": str(user_id),
-    "tags": ["orchestration"],
-})
-```
-
-`langfuse_trace_id` stored on every assistant `messages` row for feedback linking. `get_langfuse().flush()` called on shutdown to ensure no traces are lost.
+`langfuse_trace_id` stored on every assistant message row for feedback linking.
 
 ---
 
@@ -814,48 +972,67 @@ await litellm.acompletion(..., metadata={
 ```
 cortex_app/
 ├── app/
-│   ├── auth/              # JWT auth, argon2 hashing, RBAC
-│   ├── workspaces/        # Workspace CRUD, soft delete
-│   ├── agents/            # Agent CRUD + AI prompt generator
-│   ├── connectors/        # OAuth flow, instance management, AES-256 token encryption
-│   ├── api_keys/          # LiteLLM key management, provider detection
-│   ├── personas/          # User personas
-│   ├── chat/              # Conversations, messages, HITL, SSE streaming
-│   ├── admin/             # Admin-only views
-│   └── common/            # api_response, exceptions, middleware, token_budget,
-│                          # langfuse_client, redis_client, token_utils
+│   ├── auth/                   # JWT auth, argon2 hashing, RBAC
+│   ├── workspaces/             # Workspace CRUD
+│   ├── agents/                 # Agent CRUD + AI prompt generator + KB/WC junction
+│   ├── connectors/             # OAuth flow, AES-256 token encryption
+│   ├── api_keys/               # LiteLLM key management, provider detection
+│   ├── personas/               # User personas
+│   ├── chat/                   # Conversations, messages, HITL, SSE streaming
+│   ├── knowledge_bases/        # KB CRUD, document management
+│   ├── website_collections/    # WC CRUD, URL management, scrape triggers
+│   ├── admin/                  # Admin-only views
+│   └── common/                 # api_response, exceptions, middleware, redis_client
 ├── core/
-│   ├── schemas.py          # AgentInput, AgentOutput, ExecutionPlan, LongTermMemory
-│   ├── dependency_resolver.py  # Kahn's algorithm
-│   ├── orchestrator.py     # Stage-by-stage parallel execution + HITL callback
-│   ├── master_agent.py     # Plan generator (Langfuse prompt, structured output)
-│   ├── composer_agent.py   # Response synthesizer + suggestions
-│   ├── dynamic_agent.py    # Executes user agents with tools + token injection
-│   ├── memory_manager.py   # Short-term sliding window + long-term BG task
-│   └── title_generator.py  # Async LLM title generation
+│   ├── schemas.py              # AgentInput, AgentOutput, ExecutionPlan
+│   ├── dependency_resolver.py  # Kahn's topological sort
+│   ├── orchestrator.py         # Stage execution + HITL + KB/WC token injection
+│   ├── master_agent.py         # Plan generator (structured output)
+│   ├── composer_agent.py       # Response synthesizer + artifacts
+│   ├── dynamic_agent.py        # Executes agents with tools + server-injected params
+│   ├── memory_manager.py       # Short-term + long-term memory
+│   └── title_generator.py      # Async conversation title generation
 ├── connectors/
-│   ├── base.py             # BaseConnector ABC (OAuth2 interface)
-│   ├── gmail/              # GmailConnector + @tool functions
-│   ├── github/             # GitHubConnector + @tool functions
-│   ├── calendar/           # CalendarConnector + @tool functions
-│   ├── salesforce/         # SalesforceConnector + @tool functions
-│   └── tavily/             # web_search, web_search_news, fetch_url (no OAuth)
+│   ├── gmail/                  # GmailConnector + tool functions
+│   ├── github/                 # GitHubConnector + tool functions
+│   ├── calendar/               # CalendarConnector + tool functions
+│   ├── salesforce/             # SalesforceConnector + tool functions
+│   ├── tavily/                 # web_search, web_search_news, fetch_url
+│   └── website_search/         # collection_search (connector="__website__")
+├── document_pipeline/
+│   ├── tasks.py                # ingest_document_task (Celery)
+│   ├── parsers.py              # PDF, DOCX, CSV, image parsers
+│   ├── chunker.py              # Overlapping text chunker
+│   ├── embedder.py             # OpenAI embedding batches
+│   └── vector_store.py         # Qdrant ops: kb_{id}, dense+sparse+RRF
+├── web_pipeline/
+│   ├── tasks.py                # crawl_website_task (Celery)
+│   ├── spider.py               # Scrapy CortexSpider, login-wall detection
+│   ├── vector_store.py         # Qdrant ops: wc_{id}, dense only
+│   └── retriever.py            # Dense search + multi-collection merge
 ├── tools/
-│   └── registry.py         # ToolRegistry singleton, auto-discovery, HITL list
+│   └── registry.py             # ToolRegistry singleton, auto-discovery
 ├── config/
-│   └── settings.py         # All settings via pydantic-settings
+│   └── settings.py             # All settings via pydantic-settings
 ├── database/
-│   └── session.py          # Async SQLAlchemy engine + session factory
+│   └── session.py              # Async SQLAlchemy engine + session factory
 ├── frontend/
-│   ├── auth.html           # Login / register
-│   ├── index.html          # Workspace card grid
-│   ├── workspace.html      # Agent builder canvas
-│   ├── chat.html           # SSE chat + HITL popup + plan header
-│   └── dashboard.html      # Stats (user + admin view)
-├── alembic/                # DB migrations
-├── main.py                 # FastAPI app, lifespan, router registration
-├── seed_langfuse.py        # One-time prompt seeding
-├── docker-compose.yml      # postgres + redis + qdrant + app + celery_worker
+│   ├── auth.html               # Login / register
+│   ├── index.html              # Workspace card grid
+│   ├── workspace.html          # Agent builder + KB/WC pickers
+│   ├── chat.html               # SSE chat + HITL popup
+│   ├── knowledge-bases.html    # Two-panel KB manager + SSE status
+│   ├── website-collections.html # Two-panel WC manager + SSE status
+│   └── dashboard.html          # Usage stats
+├── alembic/
+│   └── versions/
+│       ├── v001_initial.py
+│       ├── v002_knowledge_bases.py
+│       └── v003_website_collections.py
+├── main.py                     # FastAPI app, lifespan, router registration
+├── celery_app.py               # Celery app: document_pipeline + web_pipeline tasks
+├── seed_langfuse.py            # One-time prompt seeding
+├── docker-compose.yml
 └── requirements.txt
 ```
 
@@ -865,22 +1042,16 @@ cortex_app/
 
 | Failure | Behaviour |
 |---------|-----------|
-| Master agent bad JSON | Pydantic validation fails → `PlanValidationError` → `error` SSE event |
-| Unknown agent name in plan | Caught in `_validate_plan` → `error` SSE, execution stops |
-| Circular dependency | `CircularDependencyError` → `error` SSE, execution stops |
-| Agent timeout / LLM error | `AgentOutput.error` set, stored in shared state; next stage continues |
-| HITL timeout (120s) | Auto-denied; Composer synthesizes noting missing output |
-| Redis down | HITL pub/sub fails → `error` SSE |
-| Composer fails | Caught by try/except in streaming.py → `error` SSE |
-| Duplicate agent name | `IntegrityError` → `409 Conflict` |
+| Master bad JSON | `PlanValidationError` → `error` SSE |
+| Unknown agent name in plan | `error` SSE, execution stops |
+| Circular dependency | `CircularDependencyError` → `error` SSE |
+| Agent LLM error | `AgentOutput.error` set, execution continues |
+| HITL timeout | Auto-denied, Composer notes missing output |
+| KB ingest failure | `status=failed`, `error_message` set, Retry available |
+| WC crawl failure | `status=failed`, `error_message` set, Retry available |
+| WC login wall | `error_message` starts with `login_required:`, UI shows Remove (no Retry) |
+| WC spider timeout | `RuntimeError` → retry up to 2× → `status=failed` |
+| Duplicate agent name | `409 Conflict` |
 | `TAVILY_API_KEY` not set | Tool raises `RuntimeError` with clear message |
-
----
-
-## What's in Phase 2
-
-- **Composer artifacts** — persist generated files (PDFs, charts, CSVs) to S3 / Backblaze B2
-- **Knowledge Bases** — file upload + web scrape → Qdrant embedding pipeline via Celery
-- **Full OAuth token refresh** — auto-renew expired Gmail / GitHub / Calendar / Salesforce tokens
-- **MCP servers** — user-supplied Model Context Protocol servers as tool sources
-- **Cron jobs** — scheduled agent runs via Celery + RedBeat
+| Qdrant unavailable | KB/WC search returns `[]`, agent continues without results |
+| Redis down | HITL fails → `error` SSE; KB/WC status updates silently dropped |

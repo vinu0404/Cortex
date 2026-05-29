@@ -86,18 +86,14 @@ class WebsiteCollectionManager:
 
     async def delete_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> None:
         wu = await self._get_url(collection_id, url_id, user_id)
-        was_ready = wu.crawl_status == WcCrawlStatusEnum.ready
 
         await self._db.delete(wu)
+        await self._db.execute(
+            update(WebsiteCollection)
+            .where(WebsiteCollection.id == collection_id)
+            .values(url_count=WebsiteCollection.url_count - 1)
+        )
         await self._db.commit()
-
-        if was_ready:
-            await self._db.execute(
-                update(WebsiteCollection)
-                .where(WebsiteCollection.id == collection_id)
-                .values(url_count=WebsiteCollection.url_count - 1)
-            )
-            await self._db.commit()
 
         from web_pipeline import vector_store as wc_vs
         await wc_vs.delete_url_chunks(str(collection_id), str(url_id))

@@ -21,7 +21,7 @@ from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.common.pagination import build_cursor_page, decode_cursor
 from app.common.redis_client import get_async_redis
-from database.session import get_db
+from database.session import get_db, get_custom_db_context_session
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,13 +84,11 @@ async def stream_chat(
     request: Request,
     body: ChatStreamRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
-    # Create conversation if not provided
-    chat_mgr = ChatManager(db)
     if not body.conversation_id:
-        conv = await chat_mgr.create_conversation(body.workspace_id, current_user.id)
-        conversation_id = conv.id
+        async with get_custom_db_context_session() as db:
+            conv = await ChatManager(db).create_conversation(body.workspace_id, current_user.id)
+            conversation_id = conv.id
     else:
         conversation_id = body.conversation_id
 
@@ -101,7 +99,6 @@ async def stream_chat(
         query=body.query,
         user_id=current_user.id,
         persona_id=body.persona_id,
-        db=db,
     )
 
     return StreamingResponse(

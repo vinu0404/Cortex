@@ -56,9 +56,9 @@ def _crawl_in_subprocess(url: str, max_depth: int, output_path: str, max_pages: 
 def crawl_website_task(self, url_id: str) -> None:
     try:
         asyncio.run(_run_crawl_pipeline(url_id))
-    except ValueError:
+    except ValueError as exc:
         # ValueError = non-retriable (missing record, login_required, etc.)
-        logger.error("crawl_website_task failed with non-retriable error: url_id=%s err=%s", url_id, exc_info=True)
+        logger.error("crawl_website_task failed with non-retriable error: url_id=%s err=%s", url_id, exc, exc_info=True)
         raise
     except Exception as exc:
         logger.error("crawl_website_task retry: url_id=%s err=%s", url_id, exc)

@@ -35,6 +35,7 @@ from core.memory_manager import MemoryManager, schedule_long_term_memory
 from core.orchestrator import OrchestrationContext, execute_plan
 from core.schemas import AgentOutput, ExecutionPlan
 from core.title_generator import schedule_title_generation
+from database.session import get_custom_db_context_session
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -58,10 +59,8 @@ async def chat_stream(
     query: str,
     user_id: UUID,
     persona_id: UUID | None,
-    db: AsyncSession,
 ) -> AsyncGenerator[str, None]:
     start_time = time.monotonic()
-    chat_mgr = ChatManager(db)
 
     try:
         await TokenBudgetService().check_budget(user_id)
@@ -69,14 +68,18 @@ async def chat_stream(
         yield sse_event({"message": e.message}, "error")
         return
 
-    # Load workspace context — any uncaught exception yields error SSE and stops stream
+    # Load all workspace context in one scoped session — released before any LLM call
     try:
-        agents_db, api_keys_db, master_model, master_key, connector_tokens_db = (
-            await _load_workspace_context(workspace_id, user_id, db)
-        )
-        summaries, recent_messages = await chat_mgr.load_memory_context(conversation_id)
-        long_term_memory = await chat_mgr.get_long_term_memory(user_id)
-        persona_prompt = await _load_persona(persona_id, user_id, db) if persona_id else None
+        async with get_custom_db_context_session() as db:
+            chat_mgr = ChatManager(db)
+            agents_db, api_keys_db, master_model, master_key, connector_tokens_db = (
+                await _load_workspace_context(workspace_id, user_id, db)
+            )
+            summaries, recent_messages = await chat_mgr.load_memory_context(conversation_id)
+            long_term_memory = await chat_mgr.get_long_term_memory(user_id)
+            persona_prompt = await _load_persona(persona_id, user_id, db) if persona_id else None
+            composer_model, composer_key = await _get_composer_key(workspace_id, user_id, db)
+            await chat_mgr.add_message(conversation_id, MessageRoleEnum.user, query)
     except _DB_RETRY_EXCEPTIONS as e:
         logger.error("DB error loading workspace context for %s: %s", workspace_id, e)
         yield sse_event({"message": "Database error while loading workspace"}, "error")
@@ -93,7 +96,6 @@ async def chat_stream(
     mem_mgr = MemoryManager(conversation_id)
     mem_mgr.load(summaries, recent_messages)
     mem_mgr.add_message("user", query)
-    await chat_mgr.add_message(conversation_id, MessageRoleEnum.user, query)
 
     if await request.is_disconnected():
         return
@@ -168,7 +170,7 @@ async def chat_stream(
 
             if agent_id not in hitl_wait_tasks:
                 # First encounter — create DB record and emit SSE exactly once
-                hitl_req = await _create_hitl_record(agent_id, plan, conversation_id, chat_mgr)
+                hitl_req = await _create_hitl_record(agent_id, plan, conversation_id)
                 req_id_str = str(hitl_req.id)
                 hitl_req_ids[agent_id] = req_id_str
                 # Start wait task — subscribes to Redis in background
@@ -213,9 +215,10 @@ async def chat_stream(
         yield sse_event({"message": "Summarising earlier conversation..."}, "compacting")
         summary = await mem_mgr.compress(master_model, master_key)
         if summary:
-            await chat_mgr.save_summary(
-                conversation_id, summary, 0, settings.SHORT_TERM_COMPRESS_FIRST_N
-            )
+            async with get_custom_db_context_session() as db:
+                await ChatManager(db).save_summary(
+                    conversation_id, summary, 0, settings.SHORT_TERM_COMPRESS_FIRST_N
+                )
 
     if await request.is_disconnected():
         return
@@ -224,7 +227,6 @@ async def chat_stream(
     yield sse_event({"phase": "composing", "agent_name": "Composer"}, "status")
 
     try:
-        composer_model, composer_key = await _get_composer_key(workspace_id, user_id, db)
         response_text, artifacts, suggestions, composer_tokens = await compose_response(
             query=query,
             agent_outputs=agent_outputs,
@@ -252,9 +254,10 @@ async def chat_stream(
         yield sse_event({"questions": suggestions}, "suggestions")
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
-    await chat_mgr.add_message(
-        conversation_id, MessageRoleEnum.assistant, response_text, latency_ms=elapsed_ms
-    )
+    async with get_custom_db_context_session() as db:
+        await ChatManager(db).add_message(
+            conversation_id, MessageRoleEnum.assistant, response_text, latency_ms=elapsed_ms
+        )
     mem_mgr.add_message("assistant", response_text)
 
     # Record token usage for budget enforcement (fire-and-forget)
@@ -262,8 +265,6 @@ async def chat_stream(
     total_tokens = agent_tokens + composer_tokens
     if total_tokens > 0:
         asyncio.create_task(TokenBudgetService().record_usage(user_id, total_tokens))
-
-    from database.session import get_custom_db_context_session
 
     async def _update_title(conv_id: UUID, title: str) -> None:
         async with get_custom_db_context_session() as bg_db:
@@ -301,13 +302,14 @@ def _get_step_name(agent_id: str, plan: ExecutionPlan) -> str:
 
 
 async def _create_hitl_record(
-    agent_id: str, plan: ExecutionPlan, conversation_id: UUID, chat_mgr: ChatManager
+    agent_id: str, plan: ExecutionPlan, conversation_id: UUID
 ):
     tool_names = next(
         (step.tools for step in plan.steps if step.agent_id == agent_id), []
     )
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=settings.HITL_TIMEOUT_SECONDS)
-    return await chat_mgr.create_hitl_request(conversation_id, agent_id, tool_names, expires_at)
+    async with get_custom_db_context_session() as db:
+        return await ChatManager(db).create_hitl_request(conversation_id, agent_id, tool_names, expires_at)
 
 
 async def _wait_for_hitl_decision(request_id: str) -> dict:
