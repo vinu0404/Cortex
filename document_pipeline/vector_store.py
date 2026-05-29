@@ -55,7 +55,7 @@ async def create_text_index(kb_id: str) -> None:
             field_schema=TextIndexParams(tokenizer=TokenizerType.WORD),
         )
     except Exception as e:
-        # BUG-24: only swallow "already exists" (status 400) — re-raise real errors
+        # Only swallow "already exists" (status 400) — re-raise real errors
         msg = str(e).lower()
         if "already exists" in msg or "400" in msg:
             pass

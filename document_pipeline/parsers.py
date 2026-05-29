@@ -25,7 +25,7 @@ def _image_exts() -> set[str]:
     return {e for e in settings.KB_SUPPORTED_EXTENSIONS if e in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}}
 
 
-# BUG-01: was sync + asyncio.run(_parse_image(...)) which crashes inside async context
+# was sync + asyncio.run(_parse_image(...)) which crashes inside async context
 async def parse_document(file_bytes: bytes, filename: str, openai_api_key: str) -> list[ParsedChunkRaw]:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
@@ -55,7 +55,7 @@ def _parse_pdf(content: bytes) -> list[ParsedChunkRaw]:
     chunks: list[ParsedChunkRaw] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
-            # BUG-16: call find_tables() once — extract_tables() + find_tables() was two separate calls
+            # call find_tables() once — extract_tables() + find_tables() was two separate calls
             found_tables = page.find_tables()
             table_bboxes = [t.bbox for t in found_tables]
 
@@ -140,7 +140,7 @@ def _parse_docx(content: bytes) -> list[ParsedChunkRaw]:
         tag = block.tag.split("}")[-1]
 
         if tag == "p":
-            # BUG-17: was using paragraph_index into doc.paragraphs which drifts for
+            # was using paragraph_index into doc.paragraphs which drifts for
             # non-paragraph body elements (sectPr, bookmarkStart, etc.). Build directly.
             para = DocxParagraph(block, doc)
             style = para.style.name if para.style else ""

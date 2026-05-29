@@ -194,7 +194,7 @@ async def kb_status_stream(token: str) -> StreamingResponse:
     user_id = user.id
 
     async def event_generator():
-        # BUG-05: get_async_redis() is a sync @lru_cache function — do NOT await it
+        # get_async_redis() is a sync @lru_cache function — do NOT await it
         redis = get_async_redis()
         channel = f"kb_status:{user_id}"
         pubsub = redis.pubsub()
@@ -203,7 +203,7 @@ async def kb_status_stream(token: str) -> StreamingResponse:
             yield "data: connected\n\n"
             async for message in pubsub.listen():
                 if message["type"] == "message":
-                    # BUG-11: decode_responses=True means data is already str — no .decode()
+                    # decode_responses=True means data is already str — no .decode()
                     yield f"data: {message['data']}\n\n"
                 await asyncio.sleep(0)
         except asyncio.CancelledError:

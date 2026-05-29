@@ -50,17 +50,17 @@ class KnowledgeBaseManager:
         docs_result = await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb_id))
         docs = list(docs_result)
 
-        # BUG-20: commit DB first — if external cleanup fails, KB is still gone
+        # commit DB first — if external cleanup fails, KB is still gone
         await self._db.delete(kb)
         await self._db.commit()
 
-        # BUG-14: B2 delete is sync boto3 — must run in executor to avoid blocking event loop
+        # B2 delete is sync boto3 — must run in executor to avoid blocking event loop
         loop = asyncio.get_event_loop()
         for doc in docs:
             if doc.storage_key:
                 await loop.run_in_executor(None, _delete_b2_file, doc.storage_key)
 
-        # BUG-04: await directly — asyncio.create_task is fire-and-forget, may never complete
+        # await directly — asyncio.create_task is fire-and-forget, may never complete
         from document_pipeline import vector_store
         await vector_store.delete_collection(str(kb_id))
 
@@ -150,7 +150,7 @@ class KnowledgeBaseManager:
                 processing_status=KbProcessingStatusEnum.pending,
             )
             self._db.add(doc)
-            # BUG-28: commit before Celery dispatch — eager workers read DB immediately
+            # commit before Celery dispatch — eager workers read DB immediately
             await self._db.commit()
 
             from document_pipeline.tasks import process_document_task
@@ -181,11 +181,11 @@ class KnowledgeBaseManager:
             user_id=user_id,
             filename=filename,
             source_type=KbSourceTypeEnum.s3_url,
-            source_url=url,  # BUG-10: store for retry
+            source_url=url,  # store for retry
             processing_status=KbProcessingStatusEnum.pending,
         )
         self._db.add(doc)
-        # BUG-28: commit before Celery dispatch
+        # commit before Celery dispatch
         await self._db.commit()
 
         creds = {}
@@ -202,7 +202,7 @@ class KnowledgeBaseManager:
     async def delete_document(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> None:
         doc = await self._get_doc(kb_id, doc_id, user_id)
 
-        # BUG-21: decrement document_count atomically (only if doc was fully indexed)
+        # decrement document_count atomically (only if doc was fully indexed)
         if doc.processing_status == KbProcessingStatusEnum.ready:
             await self._db.execute(
                 update(KnowledgeBase)
@@ -211,16 +211,16 @@ class KnowledgeBaseManager:
             )
 
         storage_key = doc.storage_key
-        # BUG-20: commit DB first — if external cleanup fails, doc is still gone
+        # commit DB first — if external cleanup fails, doc is still gone
         await self._db.delete(doc)
         await self._db.commit()
 
-        # BUG-14: B2 delete is sync boto3 — run in executor
+        # B2 delete is sync boto3 — run in executor
         if storage_key:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, _delete_b2_file, storage_key)
 
-        # BUG-04: await directly — asyncio.create_task is fire-and-forget
+        # await directly — asyncio.create_task is fire-and-forget
         from document_pipeline import vector_store
         await vector_store.delete_document_chunks(str(kb_id), str(doc_id))
 
@@ -231,10 +231,10 @@ class KnowledgeBaseManager:
 
         doc.processing_status = KbProcessingStatusEnum.pending
         doc.error_message = None
-        # BUG-28: commit before dispatch
+        # commit before dispatch
         await self._db.commit()
 
-        # BUG-09: dispatch correct task based on source_type
+        # dispatch correct task based on source_type
         if doc.source_type == KbSourceTypeEnum.s3_url:
             from document_pipeline.tasks import ingest_from_s3_task
             ingest_from_s3_task.delay(str(doc_id), doc.source_url or "", {})

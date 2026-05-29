@@ -35,7 +35,7 @@ def process_document_task(self, doc_id: str) -> None:
         raise self.retry(exc=exc)
 
 
-# BUG-03: on_failure must NOT have self as first param — args are (exc, task_id, args, kwargs, einfo)
+# on_failure must NOT have self as first param — args are (exc, task_id, args, kwargs, einfo)
 @process_document_task.on_failure
 def on_process_document_failure(exc, task_id, args, kwargs, einfo):
     doc_id = args[0] if args else kwargs.get("doc_id")
@@ -64,7 +64,7 @@ def ingest_from_s3_task(self, doc_id: str, s3_url: str, creds: dict) -> None:
         raise self.retry(exc=exc)
 
 
-# BUG-03: same fix — no self param
+# Same fix — no self param
 @ingest_from_s3_task.on_failure
 def on_ingest_s3_failure(exc, task_id, args, kwargs, einfo):
     doc_id = args[0] if args else kwargs.get("doc_id")
@@ -83,12 +83,12 @@ async def _run_device_pipeline(doc_id: str) -> None:
     from sqlalchemy import select
     import redis.asyncio as aioredis
 
-    # BUG-07: always close redis on both success and failure paths
+    # Always close redis on both success and failure paths
     redis_client = aioredis.from_url(settings.REDIS_URL)
     try:
         async with get_custom_db_context_session() as db:
             result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
-            # BUG-02: scalar_one() raises NoResultFound if doc missing → blindly retries forever
+            # scalar_one() raises NoResultFound if doc missing → blindly retries forever
             doc = result.scalar_one_or_none()
             if doc is None:
                 raise ValueError(f"Document {doc_id} not found in DB — not retrying")
@@ -99,7 +99,7 @@ async def _run_device_pipeline(doc_id: str) -> None:
             filename = doc.filename
             content_type = doc.content_type or "application/octet-stream"
 
-            # BUG-12: use canonical build_kb_storage_key instead of inline f-string
+            # use canonical build_kb_storage_key instead of inline f-string
             from document_pipeline.storage import multipart_upload_file, build_kb_storage_key
             storage_key = build_kb_storage_key(kb_id, doc_id, filename)
 
@@ -138,12 +138,12 @@ async def _run_s3_pipeline(doc_id: str, s3_url: str, creds: dict) -> None:
     from sqlalchemy import select
     import redis.asyncio as aioredis
 
-    # BUG-07: always close redis
+    # Always close redis
     redis_client = aioredis.from_url(settings.REDIS_URL)
     try:
         async with get_custom_db_context_session() as db:
             result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
-            # BUG-02: scalar_one() raises NoResultFound if doc missing
+            # scalar_one() raises NoResultFound if doc missing
             doc = result.scalar_one_or_none()
             if doc is None:
                 raise ValueError(f"Document {doc_id} not found in DB — not retrying")
@@ -159,7 +159,7 @@ async def _run_s3_pipeline(doc_id: str, s3_url: str, creds: dict) -> None:
 
             file_bytes = await _download_from_s3(s3_url, creds)
 
-            # BUG-12: use canonical build_kb_storage_key
+            # use canonical build_kb_storage_key
             from document_pipeline.storage import multipart_upload_bytes, build_kb_storage_key
             storage_key = build_kb_storage_key(kb_id, doc_id, filename)
             content_type = doc.content_type or "application/octet-stream"
@@ -204,7 +204,7 @@ async def _ingest_from_storage(db, doc, kb_id: str, doc_id: str, filename: str,
     from document_pipeline.storage import download_file
     file_bytes = download_file(storage_key)
 
-    # BUG-01: parse_document is now async (was asyncio.run inside async context)
+    # parse_document is now async (was asyncio.run inside async context)
     raw_chunks = await parse_document(file_bytes, filename, openai_api_key)
     if not raw_chunks:
         raise RuntimeError("Parser produced no chunks — document may be empty or unreadable")
@@ -226,7 +226,7 @@ async def _ingest_from_storage(db, doc, kb_id: str, doc_id: str, filename: str,
     doc.indexed_at = datetime.now(timezone.utc)
     doc.error_message = None
 
-    # BUG-21: increment knowledge_base document_count atomically
+    # increment knowledge_base document_count atomically
     await db.execute(
         update(KnowledgeBase)
         .where(KnowledgeBase.id == doc.kb_id)
@@ -297,7 +297,7 @@ async def _set_doc_failed(doc_id: str, error_message: str) -> None:
         await redis_client.aclose()
 
 
-# BUG-06: added kb_id to payload so frontend SSE listener can identify which KB to refresh
+# added kb_id to payload so frontend SSE listener can identify which KB to refresh
 async def _publish_status(
     redis_client,
     user_id: str,

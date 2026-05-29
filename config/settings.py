@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     KB_TOP_K_RRF: int = 20
     KB_TOP_K_FINAL: int = 5
     KB_RRF_K: int = 60
-    KB_RERANK_STRATEGY: str = "none"  # cross_encoder | llm | none
+    KB_RERANK_STRATEGY: str = "llm"  # cross_encoder | llm | none
 
     # --- Knowledge Base: File limits ---
     KB_SUPPORTED_EXTENSIONS: list[str] = [
