@@ -8,7 +8,40 @@ A workspace-based multi-agent AI platform built with FastAPI and LiteLLM. Users 
 
 ## How to Run
 
-### Prerequisites
+### Option A — Full Docker (recommended)
+
+Everything runs in containers. No local Python needed.
+
+```bash
+# 1. Copy and fill env
+cp .env.example .env
+# Edit .env — at minimum: JWT_SECRET, ENCRYPTION_KEY, LANGFUSE_*
+
+# 2. Start all 5 services (Postgres, Redis, Qdrant, FastAPI app, Celery worker)
+docker compose up -d
+
+# 3. First run only: apply migrations + seed Langfuse prompts
+docker exec cortex_app-app-1 alembic upgrade head
+docker exec cortex_app-app-1 python seed_langfuse.py
+```
+
+App available at `http://localhost:8000`.
+
+| Service | Container | Port | Memory limit |
+|---------|-----------|------|-------------|
+| FastAPI app | `cortex_app-app-1` | `8000` | 1 GB |
+| Celery worker | `cortex_app-celery_worker-1` | — | 512 MB |
+| PostgreSQL 16 | `cortex_app-postgres-1` | `5432` | 512 MB |
+| Redis 7 | `cortex_app-redis-1` | `6379` | 256 MB |
+| Qdrant | `cortex_app-qdrant-1` | `6333` | 512 MB |
+
+All services have health checks with retry logic. The app and Celery worker wait for Postgres, Redis, and Qdrant to be healthy before starting.
+
+---
+
+### Option B — Local
+
+#### Prerequisites
 
 - **Python 3.11+**
 - **Docker** (for PostgreSQL, Redis, Qdrant)
@@ -16,10 +49,10 @@ A workspace-based multi-agent AI platform built with FastAPI and LiteLLM. Users 
 - A **Langfuse** account (cloud or self-hosted) — all prompts live there; app fails to start without it
 - At least one LLM API key (OpenAI, Anthropic, Gemini, or Groq) — used for embeddings + LLM calls
 
-### 1. Start Infrastructure
+#### 1. Start Infrastructure
 
 ```bash
-docker compose up -d
+docker compose up -d postgres redis qdrant
 ```
 
 | Service | Port | Purpose |
@@ -29,7 +62,7 @@ docker compose up -d
 | Redis 7 | `6379/1` | Celery broker + backend |
 | Qdrant | `6333` | Vector store — KB collections (`kb_{id}`) + WC collections (`wc_{id}`) |
 
-### 2. Create Virtual Environment
+#### 2. Create Virtual Environment
 
 ```bash
 python -m venv .venv
@@ -39,19 +72,15 @@ source .venv/bin/activate          # Linux / macOS
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
-
-Copy `.env.example` to `.env` and fill in credentials:
+#### 3. Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-At minimum you need: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `LANGFUSE_*`.
+At minimum: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `LANGFUSE_*`.
 
-### 4. Seed Langfuse Prompts
-
-All agent prompts live in Langfuse. Seed once:
+#### 4. Seed Langfuse Prompts
 
 ```bash
 python seed_langfuse.py
@@ -59,46 +88,38 @@ python seed_langfuse.py
 
 Required prompt names: `master_agent`, `composer_agent`, `memory_compression`, `long_term_memory_extraction`, `title_generation`, `suggestion_generation`, `agent_prompt_generator`
 
-### 5. Apply Database Migrations
+#### 5. Apply Database Migrations
 
 ```bash
 alembic upgrade head
 ```
 
-Creates all tables including `knowledge_bases`, `kb_documents`, `agent_knowledge_bases`, `website_collections`, `website_urls`, `agent_website_collections`.
+Creates all tables: `users`, `workspaces`, `agents`, `conversations`, `messages`, `knowledge_bases`, `kb_documents`, `agent_knowledge_bases`, `website_collections`, `website_urls`, `agent_website_collections`, `message_artifacts`, `personas`, `conversation_summaries`, `refresh_tokens`, `connector_instances`, `connector_definitions`, `hitl_requests`, `user_long_term_memory`.
 
-### 6. Start the Server
+#### 6. Start the Server
 
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 7. Start Celery Worker
-
-Required for document ingestion and web crawling:
+#### 7. Start Celery Worker
 
 ```bash
 celery -A celery_app worker --loglevel=info --concurrency=4
 ```
 
+---
+
 | URL | What |
 |-----|------|
 | `http://localhost:8000` | Workspace home |
+| `http://localhost:8000/dashboard.html` | User dashboard |
+| `http://localhost:8000/admin.html` | Admin panel (admin role only) |
 | `http://localhost:8000/knowledge-bases.html` | Knowledge Base manager |
 | `http://localhost:8000/website-collections.html` | Website Collection manager |
 | `http://localhost:8000/workspace.html?id=<uuid>` | Agent builder |
 | `http://localhost:8000/chat.html?workspace_id=<uuid>` | Chat UI |
 | `http://localhost:8000/docs` | Swagger (dev only) |
-
-### Quick Start Summary
-
-```
-Terminal 1:  docker compose up -d
-             alembic upgrade head
-             python seed_langfuse.py
-Terminal 2:  uvicorn main:app --reload --port 8000
-Terminal 3:  celery -A celery_app worker --loglevel=info
-```
 
 ---
 
@@ -431,7 +452,7 @@ event: compacting    {"message": "Summarising earlier conversation..."}
 event: token         {"text": "..."}
 event: artifact      {"type": "code|table|chart", "title": "...", "content": "..."}
 event: suggestions   {"questions": ["...", "...", "..."]}
-event: done          {"total_ms": ..., "conversation_id": "..."}
+event: done          {"total_ms": ..., "conversation_id": "...", "message_id": "..."}
 event: error         {"message": "..."}
 ```
 
@@ -596,8 +617,11 @@ async def collection_search(query: str, collection_ids: list, user_id: str, top_
 |--------|------|------|-------|
 | `POST` | `/auth/register` | Public | Returns access + refresh tokens |
 | `POST` | `/auth/login` | Public | Returns access + refresh tokens |
-| `POST` | `/auth/refresh` | Bearer | Returns new access token |
-| `POST` | `/auth/logout` | Bearer | Blacklists access token |
+| `POST` | `/auth/refresh` | Bearer | Returns new access + refresh tokens |
+| `POST` | `/auth/logout` | Bearer | Blacklists access token in Redis |
+| `GET` | `/auth/me` | Bearer | Current user profile |
+| `GET` | `/auth/me/stats` | Bearer | 8 counters: workspaces, agents, conversations, messages, total_cost_usd, knowledge_bases, website_collections, active_connectors |
+| `GET` | `/auth/me/recent-conversations` | Bearer | `?limit=` (1–50). Latest conversations across all workspaces |
 
 ### Workspaces — `/workspaces`
 
@@ -671,19 +695,101 @@ async def collection_search(query: str, collection_ids: list, user_id: str, top_
 | Method | Path | Notes |
 |--------|------|-------|
 | `POST` | `/chat/conversations` | Create for workspace |
-| `GET` | `/chat/conversations` | Cursor paginated |
-| `GET` | `/chat/conversations/{id}/messages` | History |
+| `GET` | `/chat/conversations` | Cursor paginated (`?cursor=&limit=`) |
+| `GET` | `/chat/conversations/{id}/messages` | Cursor paginated — `?cursor=&limit=` — returns `{messages, has_more, prev_cursor}`. Send `prev_cursor` back as `?cursor=` to load older messages (scroll-up pagination) |
+| `POST` | `/chat/artifacts` | Save PDF or CSV artifact to B2 storage. Body: `{message_id, conversation_id, type, title, filename, content}`. Returns `{id, url}`. Idempotent — returns existing artifact if already saved for that `message_id + type` |
 | `POST` | `/chat/stream` | Main SSE execution endpoint |
 | `POST` | `/hitl/respond` | Approve/deny → Redis publish |
 
-### Personas, Admin
+### Personas
 
 | Method | Path |
 |--------|------|
-| `POST/GET/PUT/DELETE` | `/personas`, `/personas/{id}` |
-| `GET` | `/admin/users`, `/admin/workspaces`, `/admin/conversations`, `/admin/stats` |
+| `POST` | `/personas` |
+| `GET` | `/personas` |
+| `DELETE` | `/personas/{id}` |
+
+### Admin — `/admin` (role=admin required)
+
+Non-admin users are redirected to index. All list endpoints support `?cursor=&limit=`.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/admin/stats` | System-wide totals: users, workspaces, conversations, messages |
+| `PATCH` | `/admin/users/{id}` | Toggle `role` (admin/user) or `is_active` |
+
+**Cursor-paginated tables** (returns `{items, next_cursor, has_next}`):
+
+| Endpoint | Columns returned |
+|----------|-----------------|
+| `GET /admin/users` | id, email, role, is_active, created_at |
+| `GET /admin/workspaces` | id, user_id, name, created_at |
+| `GET /admin/conversations` | id, user_id, workspace_id, title, created_at |
+| `GET /admin/agents` | id, workspace_id, name, agent_type, model_id, deleted_at, created_at |
+| `GET /admin/personas` | id, user_id, name, created_at |
+| `GET /admin/messages` | id, conversation_id, role, content (first 100 chars), total_cost_usd, latency_ms, created_at |
+| `GET /admin/conversation-summaries` | id, conversation_id, message_range_start, message_range_end, created_at |
+| `GET /admin/hitl-requests` | id, conversation_id, agent_id, tool_names, status, expires_at, created_at |
+| `GET /admin/message-artifacts` | id, message_id, user_id, type, title, filename, created_at |
+| `GET /admin/knowledge-bases` | id, user_id, name, document_count, created_at |
+| `GET /admin/kb-documents` | id, kb_id, filename, processing_status, chunk_count, created_at |
+| `GET /admin/website-collections` | id, user_id, name, url_count, created_at |
+| `GET /admin/website-urls` | id, collection_id, url, crawl_status, page_count, chunk_count, created_at |
+| `GET /admin/connector-definitions` | id, slug, display_name, auth_type, is_active, created_at |
+| `GET /admin/connector-instances` | id, user_id, definition_id, account_label, status, token_expires_at, created_at |
+| `GET /admin/api-keys` | id, user_id, key_name, provider, created_at |
+| `GET /admin/long-term-memory` | id, user_id, critical_facts (truncated), preferences (truncated), updated_at |
+| `GET /admin/refresh-tokens` | id, user_id, expires_at, revoked_at, created_at |
+
+**Junction tables** (`?limit=500`, no cursor):
+
+| Endpoint | Columns |
+|----------|---------|
+| `GET /admin/agent-kbs` | agent_id, kb_id |
+| `GET /admin/agent-personas` | agent_id, persona_id |
+| `GET /admin/agent-website-collections` | agent_id, collection_id |
 
 ---
+
+## User Dashboard & Admin Panel
+
+### User Dashboard (`/dashboard.html`)
+
+Personal stats page, no admin role required.
+
+- **8 stat cards**: Workspaces · Agents · Conversations · Messages · Cost ($) · Knowledge Bases · Web Collections · Active Connectors
+- **Recent conversations**: last 8 across all workspaces — workspace name, time ago, direct Open link
+- **Connected services**: active OAuth connectors
+- **My Workspaces**: Chat and Build buttons per workspace
+- **Personas**: inline CRUD (create, delete)
+
+Stats sourced from `GET /auth/me/stats`. Admin link shown only when `role=admin`.
+
+### Admin Panel (`/admin.html`)
+
+`role=admin` required — non-admins are redirected to index on load.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ← Dashboard    Cortex Admin                  admin@x.com   │
+├──────────┬────────────┬────────────┬──────────┬─────────────┤
+│ Users:42 │ Workspaces │ Convs:305  │ Msgs:9k  │             │
+├──────────┴────────────┴────────────┴──────────┴─────────────┤
+│  [Users][Workspaces][Agents][Personas][Conversations]        │
+│  [Messages][Conv Summaries][HITL][Artifacts][KBs][KB Docs]  │
+│  [Web Cols][Web URLs][Connector Defs][Connectors][API Keys]  │
+│  [LTM][Refresh Tokens][Agent↔KBs][Agent↔Personas][Agent↔WCs]│
+├─────────────────────────────────────────────────────────────┤
+│  <table rows>                             [Load More] 50 rows│
+└─────────────────────────────────────────────────────────────┘
+```
+
+- 21 tab buttons — one per DB table; cursor-paginated with Load More
+- **Users tab only**: `→ Admin / → User` role toggle + `Activate / Deactivate` buttons
+- Junction tables (agent-kbs, agent-personas, agent-website-collections) load flat with no cursor
+
+---
+
 ## Database Schema
 
 ```mermaid
@@ -790,7 +896,60 @@ erDiagram
         UUID conversation_id FK
         ENUM role
         TEXT content
+        JSONB token_details
+        FLOAT total_cost_usd
         INT latency_ms
+        VARCHAR langfuse_trace_id
+    }
+
+    message_artifacts {
+        UUID id PK
+        UUID message_id FK
+        UUID conversation_id FK
+        UUID user_id FK
+        VARCHAR type
+        VARCHAR title
+        VARCHAR filename
+        TEXT storage_key
+        TIMESTAMPTZ created_at
+    }
+
+    conversation_summaries {
+        UUID id PK
+        UUID conversation_id FK
+        TEXT summary
+        INT message_range_start
+        INT message_range_end
+        TIMESTAMPTZ created_at
+    }
+
+    personas {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR name
+        TEXT description
+        TEXT system_prompt
+        TIMESTAMPTZ created_at
+    }
+
+    refresh_tokens {
+        UUID id PK
+        UUID user_id FK
+        TEXT token_hash
+        TIMESTAMPTZ expires_at
+        TIMESTAMPTZ revoked_at
+        TIMESTAMPTZ created_at
+    }
+
+    connector_instances {
+        UUID id PK
+        UUID user_id FK
+        UUID definition_id FK
+        TEXT encrypted_tokens
+        TIMESTAMPTZ token_expires_at
+        VARCHAR account_label
+        VARCHAR status
+        TIMESTAMPTZ created_at
     }
 
     hitl_requests {
@@ -814,6 +973,8 @@ erDiagram
     users ||--o{ workspaces : owns
     users ||--o{ knowledge_bases : owns
     users ||--o{ website_collections : owns
+    users ||--o{ personas : owns
+    users ||--o{ refresh_tokens : has
     users ||--|| user_long_term_memory : has
     workspaces ||--o{ agents : contains
     workspaces ||--o{ conversations : has
@@ -821,12 +982,16 @@ erDiagram
     agents }o--o{ website_collections : uses
     agents ||--o{ agent_knowledge_bases : has
     agents ||--o{ agent_website_collections : has
+    agents ||--o{ agent_personas : has
     knowledge_bases ||--o{ kb_documents : contains
     knowledge_bases ||--o{ agent_knowledge_bases : linked_via
     website_collections ||--o{ website_urls : contains
     website_collections ||--o{ agent_website_collections : linked_via
+    personas ||--o{ agent_personas : linked_via
     conversations ||--o{ messages : has
+    conversations ||--o{ conversation_summaries : has
     conversations ||--o{ hitl_requests : has
+    messages ||--o{ message_artifacts : has
 ```
 ---
 
@@ -981,7 +1146,7 @@ cortex_app/
 │   ├── chat/                   # Conversations, messages, HITL, SSE streaming
 │   ├── knowledge_bases/        # KB CRUD, document management
 │   ├── website_collections/    # WC CRUD, URL management, scrape triggers
-│   ├── admin/                  # Admin-only views
+│   ├── admin/                  # Admin 21-table data explorer + PATCH /users/{id}
 │   └── common/                 # api_response, exceptions, middleware, redis_client
 ├── core/
 │   ├── schemas.py              # AgentInput, AgentOutput, ExecutionPlan
@@ -1020,15 +1185,18 @@ cortex_app/
 │   ├── auth.html               # Login / register
 │   ├── index.html              # Workspace card grid
 │   ├── workspace.html          # Agent builder + KB/WC pickers
-│   ├── chat.html               # SSE chat + HITL popup
+│   ├── chat.html               # SSE chat + HITL popup + artifact save + scroll pagination
 │   ├── knowledge-bases.html    # Two-panel KB manager + SSE status
 │   ├── website-collections.html # Two-panel WC manager + SSE status
-│   └── dashboard.html          # Usage stats
+│   ├── dashboard.html          # User dashboard: 8 stat cards, recent convs, connectors, workspaces, personas
+│   └── admin.html              # Admin data explorer — all 21 DB tables, cursor pagination, user management
 ├── alembic/
 │   └── versions/
-│       ├── v001_initial.py
+│       ├── v001_initial_schema.py
 │       ├── v002_knowledge_bases.py
-│       └── v003_website_collections.py
+│       ├── v003_website_collections.py
+│       ├── v004_message_artifacts.py
+│       └── v005_connector_token_expiry.py
 ├── main.py                     # FastAPI app, lifespan, router registration
 ├── celery_app.py               # Celery app: document_pipeline + web_pipeline tasks
 ├── seed_langfuse.py            # One-time prompt seeding
