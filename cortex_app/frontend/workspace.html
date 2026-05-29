@@ -128,6 +128,12 @@
           <span style="color:var(--text-muted); font-size:13px;">No knowledge bases found.</span>
         </div>
       </div>
+      <div class="form-group">
+        <label>Website Collections</label>
+        <div id="wc-picker" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); min-height:44px;">
+          <span style="color:var(--text-muted); font-size:13px;">No website collections found.</span>
+        </div>
+      </div>
     </div>
     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px;">
       <button onclick="closeAgentModal()" class="btn btn-secondary">Cancel</button>
@@ -170,18 +176,21 @@
   let allTools = [];     // from connector definitions
   let allInstances = []; // connected instances
   let allKbs = [];       // [{id, name}]
+  let allWcs = [];       // [{id, name}]
   let agents = [];
   let editingAgentId = null;
 
   async function init() {
-    const [ws, keys, defs, instances, kbs] = await Promise.all([
+    const [ws, keys, defs, instances, kbs, wcs] = await Promise.all([
       apiGet(`workspaces/${wsId}`),
       apiGet('api-keys'),
       apiGet('connectors/definitions'),
       apiGet('connectors/instances'),
       apiGet('knowledge-bases').catch(() => []),
+      apiGet('website-collections').catch(() => []),
     ]);
     allKbs = kbs || [];
+    allWcs = wcs || [];
     document.getElementById('ws-name').textContent = ws.name;
     allInstances = instances || [];
 
@@ -237,7 +246,8 @@
         </div>
         ${agent.system_prompt ? `<p style="color:var(--text-muted); font-size:12px; line-height:1.5;">${esc(agent.system_prompt.slice(0, 120))}${agent.system_prompt.length > 120 ? '…' : ''}</p>` : ''}
         ${agent.tools_config?.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${agent.tools_config.map(t => `<span class="badge">${esc(t.tool)}${t.requires_hitl ? ' 🔒' : ''}</span>`).join('')}</div>` : ''}
-        ${agent.kb_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.kb_ids.map(kbId => { const kb = allKbs.find(k => k.id === kbId); return kb ? `<span class="badge" style="background:rgba(99,102,241,.12);color:#6366f1;">📚 ${esc(kb.name)}</span>` : ''; }).join('')}</div>` : ''}`;
+        ${agent.kb_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.kb_ids.map(kbId => { const kb = allKbs.find(k => k.id === kbId); return kb ? `<span class="badge" style="background:rgba(99,102,241,.12);color:#6366f1;">📚 ${esc(kb.name)}</span>` : ''; }).join('')}</div>` : ''}
+        ${agent.collection_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.collection_ids.map(cid => { const wc = allWcs.find(w => w.id === cid); return wc ? `<span class="badge" style="background:rgba(16,185,129,.12);color:#059669;">🌐 ${esc(wc.name)}</span>` : ''; }).join('')}</div>` : ''}`;
       container.appendChild(div);
     });
   }
@@ -294,6 +304,25 @@
     return Array.from(document.querySelectorAll('#kb-picker input:checked')).map(cb => cb.dataset.kbId);
   }
 
+  function renderWcPicker() {
+    const container = document.getElementById('wc-picker');
+    container.innerHTML = '';
+    if (!allWcs.length) {
+      container.innerHTML = '<span style="color:var(--text-muted); font-size:13px;">No website collections — <a href="/website-collections.html">create one</a>.</span>';
+      return;
+    }
+    for (const wc of allWcs) {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
+      label.innerHTML = `<input type="checkbox" data-wc-id="${wc.id}"> ${esc(wc.name)}`;
+      container.appendChild(label);
+    }
+  }
+
+  function getSelectedCollectionIds() {
+    return Array.from(document.querySelectorAll('#wc-picker input:checked')).map(cb => cb.dataset.wcId);
+  }
+
   async function generatePrompt() {
     const desc = document.getElementById('agent-user-desc').value.trim();
     if (!desc) { toast('Describe what the agent should do first', 'error'); return; }
@@ -324,6 +353,7 @@
     document.getElementById('agent-prompt').value = agent.system_prompt || '';
     renderToolPicker();
     renderKbPicker();
+    renderWcPicker();
     if (agent.model_id && agent.api_key_id) {
       document.getElementById('agent-model').value = JSON.stringify({ model_id: agent.model_id, api_key_id: agent.api_key_id });
     }
@@ -335,6 +365,10 @@
     });
     (agent.kb_ids || []).forEach(kbId => {
       const cb = document.querySelector(`#kb-picker input[data-kb-id="${kbId}"]`);
+      if (cb) cb.checked = true;
+    });
+    (agent.collection_ids || []).forEach(cid => {
+      const cb = document.querySelector(`#wc-picker input[data-wc-id="${cid}"]`);
       if (cb) cb.checked = true;
     });
     showModal('modal-agent');
@@ -350,6 +384,7 @@
       tool: t.name, connector_slug: t.connector_slug, requires_hitl: !!t.requires_hitl
     }));
     const kb_ids = getSelectedKbIds();
+    const collection_ids = getSelectedCollectionIds();
 
     let model_id = null, api_key_id = null;
     if (modelVal) { const parsed = JSON.parse(modelVal); model_id = parsed.model_id; api_key_id = parsed.api_key_id; }
@@ -358,9 +393,9 @@
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
       if (editingAgentId) {
-        await apiPut(`agents/${editingAgentId}`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids });
+        await apiPut(`agents/${editingAgentId}`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids, collection_ids });
       } else {
-        await apiPost(`workspaces/${wsId}/agents`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids });
+        await apiPost(`workspaces/${wsId}/agents`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids, collection_ids });
       }
       closeAgentModal();
       await loadAgents();
@@ -381,6 +416,7 @@
     document.getElementById('agent-prompt').value = '';
     document.getElementById('agent-user-desc').value = '';
     document.querySelectorAll('#kb-picker input').forEach(cb => cb.checked = false);
+    document.querySelectorAll('#wc-picker input').forEach(cb => cb.checked = false);
     hideModal('modal-agent');
   }
 

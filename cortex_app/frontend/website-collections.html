@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Website Collections</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .wc-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); cursor:pointer; transition:border-color .15s; }
+    .wc-card:hover { border-color:var(--accent); }
+    .wc-card.active { border-color:var(--accent); background:var(--surface); }
+    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; flex-shrink:0; }
+    .status-pending { background:#f59e0b; }
+    .status-crawling, .status-processing { background:#3b82f6; animation:pulse-dot 1s ease-in-out infinite; }
+    .status-ready { background:#22c55e; }
+    .status-failed { background:#ef4444; }
+    @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:.4;} }
+    .url-row { border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; background:var(--bg); }
+  </style>
+</head>
+<body>
+
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span style="font-weight:600; font-size:15px;">Website Collections</span>
+  </div>
+  <button onclick="showModal('modal-create-wc')" class="btn btn-primary">+ New Collection</button>
+</nav>
+
+<div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
+
+  <!-- Collection list -->
+  <div style="width:300px; flex-shrink:0; border-right:1px solid var(--border); overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px;">
+    <div id="wc-list">
+      <div style="display:flex; align-items:center; justify-content:center; height:80px; color:var(--text-muted);"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- URL panel -->
+  <div style="flex:1; overflow-y:auto; padding:24px;" id="url-panel">
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--text-muted);">
+      <p style="font-size:14px;">Select a collection to manage its URLs.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- Create Collection Modal -->
+<div id="modal-create-wc" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">New Website Collection</span>
+      <button class="modal-close" onclick="hideModal('modal-create-wc')">×</button>
+    </div>
+    <form onsubmit="createCollection(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Name</label>
+        <input id="wc-name" class="input" placeholder="Marketing Site" required>
+      </div>
+      <div class="form-group">
+        <label>Description <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
+        <textarea id="wc-desc" class="textarea" placeholder="What websites will this contain?"></textarea>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-create-wc')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="create-wc-btn" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add URL Modal -->
+<div id="modal-add-url" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add URL</span>
+      <button class="modal-close" onclick="hideModal('modal-add-url')">×</button>
+    </div>
+    <form onsubmit="addUrl(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>URL</label>
+        <input id="url-input" class="input" placeholder="https://example.com" required>
+        <span style="font-size:12px; color:var(--text-muted);">Must start with https:// or http://</span>
+      </div>
+      <div class="form-group">
+        <label>Crawl Depth</label>
+        <select id="depth-input" class="select">
+          <option value="1">1 — Entry page only</option>
+          <option value="2" selected>2 — Entry + linked pages (default)</option>
+          <option value="3">3 — Deeper crawl</option>
+          <option value="4">4 — Extensive crawl</option>
+          <option value="5">5 — Full crawl</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-add-url')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="add-url-btn" class="btn btn-primary">Add URL</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+
+  let collections = [];
+  let activeWcId = null;
+  let urls = [];
+  let sseSource = null;
+
+  // ---- Collections ----
+
+  async function loadCollections() {
+    try {
+      collections = await apiGet('website-collections') || [];
+      renderCollectionList();
+      if (activeWcId && collections.find(c => c.id === activeWcId)) {
+        await loadUrls(activeWcId);
+      }
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function renderCollectionList() {
+    const el = document.getElementById('wc-list');
+    if (!collections.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); font-size:13px; padding:8px 0;">No collections yet.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    for (const wc of collections) {
+      const div = document.createElement('div');
+      div.className = 'wc-card' + (wc.id === activeWcId ? ' active' : '');
+      div.onclick = () => selectCollection(wc.id);
+      div.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <div style="font-weight:600; font-size:14px;">${esc(wc.name)}</div>
+            <div style="color:var(--text-muted); font-size:12px; margin-top:2px;">${wc.url_count || 0} URL${wc.url_count === 1 ? '' : 's'}</div>
+          </div>
+          <button onclick="event.stopPropagation(); deleteCollection('${wc.id}')" class="btn btn-danger btn-sm" style="flex-shrink:0;">×</button>
+        </div>
+        ${wc.description ? `<p style="color:var(--text-muted); font-size:12px; margin-top:6px; line-height:1.4;">${esc(wc.description)}</p>` : ''}`;
+      el.appendChild(div);
+    }
+  }
+
+  async function createCollection(e) {
+    e.preventDefault();
+    const btn = document.getElementById('create-wc-btn');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+      const wc = await apiPost('website-collections', {
+        name: document.getElementById('wc-name').value,
+        description: document.getElementById('wc-desc').value || null,
+      });
+      hideModal('modal-create-wc');
+      document.getElementById('wc-name').value = '';
+      document.getElementById('wc-desc').value = '';
+      await loadCollections();
+      selectCollection(wc.id);
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Create'; }
+  }
+
+  async function deleteCollection(id) {
+    if (!confirm('Delete this collection and all its scraped data?')) return;
+    try {
+      await apiDelete(`website-collections/${id}`);
+      if (activeWcId === id) { activeWcId = null; renderUrlPanel(null); }
+      await loadCollections();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  // ---- URL panel ----
+
+  function selectCollection(id) {
+    activeWcId = id;
+    renderCollectionList();
+    loadUrls(id);
+  }
+
+  async function loadUrls(wcId) {
+    try {
+      urls = await apiGet(`website-collections/${wcId}/urls`) || [];
+      const wc = collections.find(c => c.id === wcId);
+      renderUrlPanel(wc);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function isLoginBlocked(wu) {
+    return wu.crawl_status === 'failed' && wu.error_message?.startsWith('login_required:');
+  }
+
+  function renderUrlRow(wu) {
+    const statusClass = `status-${wu.crawl_status}`;
+    const isActive = wu.crawl_status === 'crawling' || wu.crawl_status === 'processing';
+    const login = isLoginBlocked(wu);
+
+    let statusInfo = '';
+    if (wu.crawl_status === 'ready') {
+      statusInfo = `<span style="font-size:12px; color:var(--text-muted);">${wu.page_count} page${wu.page_count===1?'':'s'} · ${wu.chunk_count} chunks</span>`;
+      if (wu.login_blocked_count > 0) {
+        statusInfo += ` <span class="badge" style="background:#fef3c7;color:#92400e;border-color:#fde68a;">⚠ ${wu.login_blocked_count} page${wu.login_blocked_count===1?'':'s'} need login</span>`;
+      }
+    } else if (wu.crawl_status === 'failed') {
+      if (login) {
+        statusInfo = `<span class="badge" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5;">🔒 Login required — remove this URL</span>`;
+      } else {
+        const errMsg = wu.error_message ? esc(wu.error_message.slice(0, 120)) : 'Unknown error';
+        statusInfo = `<span class="badge" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5;" title="${errMsg}">✗ ${errMsg}</span>`;
+      }
+    } else if (wu.crawl_status === 'crawling') {
+      statusInfo = `<span style="font-size:12px; color:var(--text-muted);">Crawling…</span>`;
+    } else if (wu.crawl_status === 'processing') {
+      statusInfo = `<span style="font-size:12px; color:var(--text-muted);">Processing ${wu.page_count || '…'} pages…</span>`;
+    }
+
+    let actions = '';
+    if (login) {
+      actions = `<button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">Remove</button>`;
+    } else if (isActive) {
+      actions = `<button disabled class="btn btn-secondary btn-sm" style="opacity:.4;">Scraping…</button>
+                 <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
+    } else if (wu.crawl_status === 'failed') {
+      actions = `<button onclick="retryUrl('${wu.id}')" class="btn btn-secondary btn-sm">Retry</button>
+                 <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
+    } else {
+      actions = `<button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Scrape</button>
+                 <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
+    }
+
+    return `
+      <div class="url-row" id="url-row-${wu.id}">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+          <div style="min-width:0; flex:1;">
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+              <span class="status-dot ${statusClass}"></span>
+              <span style="font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(wu.url)}">${esc(wu.url)}</span>
+              <span class="badge" style="flex-shrink:0;">depth ${wu.max_depth}</span>
+            </div>
+            <div style="padding-left:14px;">${statusInfo}</div>
+          </div>
+          <div style="display:flex; gap:6px; flex-shrink:0;">${actions}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderUrlPanel(wc) {
+    const panel = document.getElementById('url-panel');
+    if (!wc) {
+      panel.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted);"><p>Select a collection.</p></div>';
+      return;
+    }
+
+    const urlsHtml = urls.length
+      ? urls.map(wu => renderUrlRow(wu)).join('')
+      : '<div style="color:var(--text-muted); font-size:13px; padding:16px 0;">No URLs yet — add one below.</div>';
+
+    panel.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+        <h2 style="font-size:16px; font-weight:600;">${esc(wc.name)}</h2>
+        <div style="display:flex; gap:8px;">
+          <button onclick="scrapeAll()" class="btn btn-secondary btn-sm">Scrape All</button>
+          <button onclick="showModal('modal-add-url')" class="btn btn-primary btn-sm">+ Add URL</button>
+        </div>
+      </div>
+      <div id="url-list" style="display:flex; flex-direction:column; gap:10px;">${urlsHtml}</div>`;
+  }
+
+  // ---- URL actions ----
+
+  async function addUrl(e) {
+    e.preventDefault();
+    if (!activeWcId) return;
+    const urlVal = document.getElementById('url-input').value.trim();
+    if (!urlVal.startsWith('http://') && !urlVal.startsWith('https://')) {
+      toast('URL must start with http:// or https://', 'error'); return;
+    }
+    const btn = document.getElementById('add-url-btn');
+    btn.disabled = true; btn.textContent = 'Adding…';
+    try {
+      await apiPost(`website-collections/${activeWcId}/urls`, {
+        url: urlVal,
+        max_depth: parseInt(document.getElementById('depth-input').value),
+      });
+      hideModal('modal-add-url');
+      document.getElementById('url-input').value = '';
+      document.getElementById('depth-input').value = '2';
+      toast('URL added');
+      await loadCollections();
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Add URL'; }
+  }
+
+  async function scrapeUrl(urlId) {
+    if (!activeWcId) return;
+    try {
+      await apiPost(`website-collections/${activeWcId}/urls/${urlId}/scrape`, {});
+      toast('Scrape queued');
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function scrapeAll() {
+    if (!activeWcId) return;
+    try {
+      await apiPost(`website-collections/${activeWcId}/scrape`, {});
+      toast('All URLs queued for scraping');
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function retryUrl(urlId) {
+    if (!activeWcId) return;
+    try {
+      await apiPost(`website-collections/${activeWcId}/urls/${urlId}/retry`, {});
+      toast('Re-queued for scraping');
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function deleteUrl(urlId) {
+    if (!activeWcId) return;
+    if (!confirm('Remove this URL and its scraped data?')) return;
+    try {
+      await apiDelete(`website-collections/${activeWcId}/urls/${urlId}`);
+      await loadCollections();
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  // ---- SSE ----
+
+  function startSse() {
+    if (sseSource) sseSource.close();
+    const token = getToken();
+    sseSource = new EventSource(`/website-collections/status/stream?token=${encodeURIComponent(token)}`);
+    sseSource.onmessage = async e => {
+      if (e.data === 'connected') return;
+      try {
+        const payload = JSON.parse(e.data);
+        if (!payload || !payload.collection_id) return;
+
+        // Update collection list url_count if needed
+        await loadCollections();
+
+        // Update the specific URL row in-place if it's visible
+        if (activeWcId === payload.collection_id && payload.url_id) {
+          const existingRow = document.getElementById(`url-row-${payload.url_id}`);
+          if (existingRow) {
+            // Merge SSE data into local urls array and re-render row
+            const idx = urls.findIndex(u => u.id === payload.url_id);
+            if (idx !== -1) {
+              if (payload.status) urls[idx].crawl_status = payload.status;
+              if (payload.page_count != null) urls[idx].page_count = payload.page_count;
+              if (payload.chunk_count != null) urls[idx].chunk_count = payload.chunk_count;
+              if (payload.login_blocked_count != null) urls[idx].login_blocked_count = payload.login_blocked_count;
+              if (payload.error_message != null) urls[idx].error_message = payload.error_message;
+              existingRow.outerHTML = renderUrlRow(urls[idx]);
+            }
+          } else {
+            await loadUrls(activeWcId);
+          }
+        }
+      } catch {}
+    };
+    sseSource.onerror = () => {
+      sseSource.close();
+      setTimeout(startSse, 3000);
+    };
+  }
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  loadCollections();
+  startSse();
+</script>
+</body>
+</html>
