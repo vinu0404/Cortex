@@ -51,6 +51,7 @@ class AgentManager:
         api_key_id: UUID | None,
         display_order: int,
         tools_config: list[dict],
+        kb_ids: list[UUID] | None = None,
     ) -> Agent:
         from app.workspaces.manager import WorkspaceManager
         await WorkspaceManager(self._db).get_workspace(workspace_id, user_id)
@@ -71,9 +72,15 @@ class AgentManager:
             await self._db.flush()
         except IntegrityError as e:
             raise ConflictError(f"Agent name '{name}' already exists in this workspace") from e
+
+        if kb_ids:
+            from app.knowledge_bases.manager import KnowledgeBaseManager
+            await KnowledgeBaseManager(self._db).set_agent_kbs(agent.id, kb_ids)
+
         return agent
 
     async def update_agent(self, agent_id: UUID, user_id: UUID, **kwargs) -> Agent:
+        kb_ids: list[UUID] | None = kwargs.pop("kb_ids", None)
         agent = await self._get_editable_agent(agent_id, user_id)
         for field, value in kwargs.items():
             if value is not None:
@@ -83,7 +90,24 @@ class AgentManager:
             await self._db.flush()
         except IntegrityError as e:
             raise ConflictError("Agent name already exists in this workspace") from e
+
+        if kb_ids is not None:
+            from app.knowledge_bases.manager import KnowledgeBaseManager
+            await KnowledgeBaseManager(self._db).set_agent_kbs(agent.id, kb_ids)
+
         return agent
+
+    async def get_kb_ids_for_agents(self, agent_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+        if not agent_ids:
+            return {}
+        from app.knowledge_bases.db_models import AgentKnowledgeBase
+        rows = list(await self._db.scalars(
+            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
+        ))
+        result: dict[UUID, list[UUID]] = {aid: [] for aid in agent_ids}
+        for row in rows:
+            result[row.agent_id].append(row.kb_id)
+        return result
 
     async def delete_agent(self, agent_id: UUID, user_id: UUID) -> None:
         agent = await self._get_editable_agent(agent_id, user_id)

@@ -3,9 +3,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import litellm
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langfuse.callback import CallbackHandler
 
@@ -75,6 +76,27 @@ app.add_middleware(RequestContextMiddleware)
 
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    msgs = []
+    for e in exc.errors():
+        loc = " → ".join(str(l) for l in e["loc"] if l != "body")
+        msgs.append(f"{loc}: {e['msg']}" if loc else e["msg"])
+    return JSONResponse(
+        status_code=422,
+        content={"status": "error", "code": "VALIDATION_ERROR", "message": "; ".join(msgs)},
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "code": "INTERNAL_ERROR", "message": "An unexpected error occurred. Please try again."},
+    )
+
 # ---- API Routers ----
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(workspaces_router, prefix="/workspaces", tags=["workspaces"])
@@ -122,3 +144,8 @@ async def serve_chat():
 @app.get("/dashboard.html")
 async def serve_dashboard():
     return FileResponse("frontend/dashboard.html")
+
+
+@app.get("/knowledge-bases.html")
+async def serve_knowledge_bases():
+    return FileResponse("frontend/knowledge-bases.html")

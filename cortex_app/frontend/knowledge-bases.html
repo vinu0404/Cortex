@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Knowledge Bases</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .kb-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); cursor:pointer; transition:border-color .15s; }
+    .kb-card:hover { border-color:var(--primary); }
+    .kb-card.active { border-color:var(--primary); background:var(--surface); }
+    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+    .status-pending { background:#f59e0b; }
+    .status-uploading, .status-processing { background:#3b82f6; }
+    .status-ready { background:#22c55e; }
+    .status-failed { background:#ef4444; }
+    .drop-zone { border:2px dashed var(--border); border-radius:var(--radius); padding:32px; text-align:center; cursor:pointer; transition:border-color .15s; }
+    .drop-zone.drag-over { border-color:var(--primary); background:var(--surface); }
+  </style>
+</head>
+<body>
+
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span style="font-weight:600; font-size:15px;">Knowledge Bases</span>
+  </div>
+  <button onclick="showModal('modal-create-kb')" class="btn btn-primary">+ New Knowledge Base</button>
+</nav>
+
+<div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
+
+  <!-- KB list -->
+  <div style="width:300px; flex-shrink:0; border-right:1px solid var(--border); overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px;">
+    <div id="kb-list">
+      <div style="display:flex; align-items:center; justify-content:center; height:80px; color:var(--text-muted);"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Document panel -->
+  <div style="flex:1; overflow-y:auto; padding:24px;" id="doc-panel">
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--text-muted);">
+      <p style="font-size:14px;">Select a knowledge base to manage its documents.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- Create KB Modal -->
+<div id="modal-create-kb" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">New Knowledge Base</span>
+      <button class="modal-close" onclick="hideModal('modal-create-kb')">×</button>
+    </div>
+    <form onsubmit="createKb(event)" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Name</label>
+        <input id="kb-name" class="input" placeholder="Marketing Docs" required>
+      </div>
+      <div class="form-group">
+        <label>Description <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
+        <textarea id="kb-desc" class="textarea" placeholder="What documents will this contain?"></textarea>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-create-kb')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="create-kb-btn" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add from S3 Modal -->
+<div id="modal-s3" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add from S3 URL</span>
+      <button class="modal-close" onclick="hideModal('modal-s3')">×</button>
+    </div>
+    <form onsubmit="addFromS3(event)" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="form-group">
+        <label>S3 / Presigned URL</label>
+        <input id="s3-url" class="input" placeholder="https://..." required>
+      </div>
+      <div class="form-group">
+        <label>Filename</label>
+        <input id="s3-filename" class="input" placeholder="report.pdf" required>
+      </div>
+      <details style="font-size:13px; color:var(--text-muted);">
+        <summary style="cursor:pointer; margin-bottom:8px;">AWS credentials (optional — skip for presigned URLs)</summary>
+        <div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">
+          <div class="form-group">
+            <label>Access Key ID</label>
+            <input id="s3-key-id" class="input" placeholder="AKIA…">
+          </div>
+          <div class="form-group">
+            <label>Secret Access Key</label>
+            <input id="s3-secret" class="input" type="password" placeholder="…">
+          </div>
+          <div class="form-group">
+            <label>Region</label>
+            <input id="s3-region" class="input" placeholder="us-east-1">
+          </div>
+        </div>
+      </details>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="hideModal('modal-s3')" class="btn btn-secondary">Cancel</button>
+        <button type="submit" id="s3-btn" class="btn btn-primary">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+
+  let kbs = [];
+  let activeKbId = null;
+  let docs = [];
+  let sseSource = null;
+
+  // --- KB CRUD ---
+
+  async function loadKbs() {
+    try {
+      kbs = await apiGet('knowledge-bases') || [];
+      renderKbList();
+      if (activeKbId && kbs.find(k => k.id === activeKbId)) {
+        await loadDocs(activeKbId);
+      }
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function renderKbList() {
+    const el = document.getElementById('kb-list');
+    if (!kbs.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); font-size:13px; padding:8px 0;">No knowledge bases yet.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    for (const kb of kbs) {
+      const div = document.createElement('div');
+      div.className = 'kb-card' + (kb.id === activeKbId ? ' active' : '');
+      div.onclick = () => selectKb(kb.id);
+      div.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <div style="font-weight:600; font-size:14px;">${esc(kb.name)}</div>
+            <div style="color:var(--text-muted); font-size:12px; margin-top:2px;">${kb.document_count || 0} documents</div>
+          </div>
+          <button onclick="event.stopPropagation(); deleteKb('${kb.id}')" class="btn btn-danger btn-sm" style="flex-shrink:0;">×</button>
+        </div>
+        ${kb.description ? `<p style="color:var(--text-muted); font-size:12px; margin-top:6px; line-height:1.4;">${esc(kb.description)}</p>` : ''}`;
+      el.appendChild(div);
+    }
+  }
+
+  async function createKb(e) {
+    e.preventDefault();
+    const btn = document.getElementById('create-kb-btn');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+      const kb = await apiPost('knowledge-bases', {
+        name: document.getElementById('kb-name').value,
+        description: document.getElementById('kb-desc').value || null,
+      });
+      hideModal('modal-create-kb');
+      document.getElementById('kb-name').value = '';
+      document.getElementById('kb-desc').value = '';
+      await loadKbs();
+      selectKb(kb.id);
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Create'; }
+  }
+
+  async function deleteKb(id) {
+    if (!confirm('Delete this knowledge base and all its documents?')) return;
+    try {
+      await apiDelete(`knowledge-bases/${id}`);
+      if (activeKbId === id) { activeKbId = null; renderDocPanel(null); }
+      await loadKbs();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  // --- Document panel ---
+
+  function selectKb(id) {
+    activeKbId = id;
+    renderKbList();
+    loadDocs(id);
+  }
+
+  async function loadDocs(kbId) {
+    try {
+      docs = await apiGet(`knowledge-bases/${kbId}/documents`) || [];
+      const kb = kbs.find(k => k.id === kbId);
+      renderDocPanel(kb);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function renderDocPanel(kb) {
+    const panel = document.getElementById('doc-panel');
+    if (!kb) {
+      panel.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted);"><p>Select a knowledge base.</p></div>';
+      return;
+    }
+
+    const docsHtml = docs.length ? docs.map(d => `
+      <tr style="border-top:1px solid var(--border);">
+        <td style="padding:10px 8px; font-size:13px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(d.filename)}</td>
+        <td style="padding:10px 8px;">
+          <span class="status-dot status-${d.processing_status}"></span>
+          <span style="font-size:12px;">${esc(d.processing_status)}</span>
+        </td>
+        <td style="padding:10px 8px; font-size:12px; color:var(--text-muted);">${d.chunk_count || '—'}</td>
+        <td style="padding:10px 8px; font-size:12px; color:var(--text-muted);">${d.indexed_at ? new Date(d.indexed_at).toLocaleString() : '—'}</td>
+        <td style="padding:10px 8px;">
+          <div style="display:flex; gap:6px;">
+            ${d.processing_status === 'ready' ? `<button onclick="viewDoc('${kb.id}','${d.id}')" class="btn btn-secondary btn-sm">View</button>` : ''}
+            ${d.processing_status === 'failed' ? `<button onclick="retryDoc('${kb.id}','${d.id}')" class="btn btn-secondary btn-sm">Retry</button>` : ''}
+            <button onclick="deleteDoc('${kb.id}','${d.id}')" class="btn btn-danger btn-sm">×</button>
+          </div>
+        </td>
+      </tr>`).join('') : `<tr><td colspan="5" style="padding:24px 8px; text-align:center; color:var(--text-muted); font-size:13px;">No documents yet — upload some below.</td></tr>`;
+
+    panel.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+        <h2 style="font-size:16px; font-weight:600;">${esc(kb.name)}</h2>
+        <div style="display:flex; gap:8px;">
+          <button onclick="document.getElementById('file-input').click()" class="btn btn-primary btn-sm">Upload Files</button>
+          <button onclick="showModal('modal-s3')" class="btn btn-secondary btn-sm">From S3 URL</button>
+        </div>
+      </div>
+
+      <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.txt,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp" style="display:none" onchange="uploadFiles(event)">
+
+      <div id="drop-zone" class="drop-zone" onclick="document.getElementById('file-input').click()"
+           ondragover="event.preventDefault(); this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="event.preventDefault(); this.classList.remove('drag-over'); uploadFromDrop(event)">
+        <p style="color:var(--text-muted); font-size:13px;">Drop files here or click to browse<br><span style="font-size:11px;">PDF, DOCX, XLSX, CSV, TXT, MD, images — up to 100 MB each</span></p>
+      </div>
+
+      <div style="margin-top:24px;">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr style="text-align:left;">
+              <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Filename</th>
+              <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Status</th>
+              <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Chunks</th>
+              <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Indexed At</th>
+              <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="docs-tbody">${docsHtml}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // --- Upload ---
+
+  async function uploadFiles(e) {
+    await doUpload(e.target.files);
+    e.target.value = '';
+  }
+
+  async function uploadFromDrop(e) {
+    await doUpload(e.dataTransfer.files);
+  }
+
+  async function doUpload(fileList) {
+    if (!activeKbId || !fileList.length) return;
+    const form = new FormData();
+    for (const f of fileList) form.append('files', f);
+    try {
+      const token = getToken();
+      const resp = await fetch(`/knowledge-bases/${activeKbId}/documents`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const json = await resp.json();
+      if (!resp.ok) throw new Error(json.message || 'Upload failed');
+      const results = json.data || [];
+      const pending = results.filter(r => r.status === 'pending').length;
+      const skipped = results.filter(r => r.skipped).length;
+      const rejected = results.filter(r => r.status === 'rejected');
+      if (pending) toast(`${pending} file(s) queued for processing`);
+      if (skipped) toast(`${skipped} duplicate(s) skipped`);
+      rejected.forEach(r => toast(`${r.filename}: ${r.reason}`, 'error'));
+      await loadDocs(activeKbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function addFromS3(e) {
+    e.preventDefault();
+    if (!activeKbId) return;
+    const btn = document.getElementById('s3-btn');
+    btn.disabled = true; btn.textContent = 'Adding…';
+    try {
+      const body = {
+        url: document.getElementById('s3-url').value,
+        filename: document.getElementById('s3-filename').value,
+      };
+      const keyId = document.getElementById('s3-key-id').value;
+      if (keyId) {
+        body.access_key_id = keyId;
+        body.secret_access_key = document.getElementById('s3-secret').value;
+        body.region = document.getElementById('s3-region').value || 'us-east-1';
+      }
+      await apiPost(`knowledge-bases/${activeKbId}/documents/from-s3`, body);
+      hideModal('modal-s3');
+      ['s3-url','s3-filename','s3-key-id','s3-secret','s3-region'].forEach(id => document.getElementById(id).value = '');
+      toast('Document queued for ingestion');
+      await loadDocs(activeKbId);
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Add'; }
+  }
+
+  async function viewDoc(kbId, docId) {
+    try {
+      const data = await apiGet(`knowledge-bases/${kbId}/documents/${docId}/view`);
+      window.open(data.url, '_blank');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function retryDoc(kbId, docId) {
+    try {
+      await apiPost(`knowledge-bases/${kbId}/documents/${docId}/retry`, {});
+      toast('Document re-queued');
+      await loadDocs(kbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function deleteDoc(kbId, docId) {
+    if (!confirm('Delete this document?')) return;
+    try {
+      await apiDelete(`knowledge-bases/${kbId}/documents/${docId}`);
+      await loadDocs(kbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  // --- SSE status updates ---
+
+  function startSse() {
+    if (sseSource) sseSource.close();
+    const token = getToken();
+    sseSource = new EventSource(`/knowledge-bases/status/stream?token=${encodeURIComponent(token)}`);
+    sseSource.addEventListener('message', async e => {
+      if (!activeKbId) return;
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload && payload.kb_id) {
+          await loadDocs(activeKbId);
+          await loadKbs();
+        }
+      } catch {}
+    });
+    sseSource.onerror = () => {
+      sseSource.close();
+      setTimeout(startSse, 5000);
+    };
+  }
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  loadKbs();
+  startSse();
+</script>
+</body>
+</html>

@@ -19,6 +19,7 @@ class AgentCreate(BaseModel):
     api_key_id: UUID | None = None
     display_order: int = 0
     tools_config: list[ToolConfig] = []
+    kb_ids: list[UUID] = []
 
 
 class AgentUpdate(BaseModel):
@@ -28,6 +29,7 @@ class AgentUpdate(BaseModel):
     api_key_id: UUID | None = None
     display_order: int | None = None
     tools_config: list[ToolConfig] | None = None
+    kb_ids: list[UUID] | None = None
 
 
 class AgentResponse(BaseModel):
@@ -41,6 +43,7 @@ class AgentResponse(BaseModel):
     display_order: int
     is_editable: bool
     tools_config: list[dict]
+    kb_ids: list[UUID] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}

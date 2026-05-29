@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+from functools import partial
 
 import litellm
 
@@ -9,15 +11,20 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-async def rerank(query: str, candidates: list[dict], api_key: str) -> list[dict]:
+# BUG-23: accept top_k from caller so it wins over KB_TOP_K_FINAL
+async def rerank(query: str, candidates: list[dict], api_key: str, top_k: int | None = None) -> list[dict]:
     strategy = settings.KB_RERANK_STRATEGY
-    top_k = settings.KB_TOP_K_FINAL
+    effective_top_k = top_k if top_k is not None else settings.KB_TOP_K_FINAL
 
     if strategy == "cross_encoder":
-        return _rerank_cross_encoder(query, candidates, top_k)
+        # BUG-13: cross-encoder is CPU-bound — run in executor to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, partial(_rerank_cross_encoder, query, candidates, effective_top_k)
+        )
     if strategy == "llm":
-        return await _rerank_llm(query, candidates, api_key, top_k)
-    return candidates[:top_k]
+        return await _rerank_llm(query, candidates, api_key, effective_top_k)
+    return candidates[:effective_top_k]
 
 
 def _rerank_cross_encoder(query: str, candidates: list[dict], top_k: int) -> list[dict]:

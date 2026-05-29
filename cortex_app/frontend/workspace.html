@@ -122,6 +122,12 @@
         <label>Tools</label>
         <div id="tool-picker" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); min-height:44px;"></div>
       </div>
+      <div class="form-group">
+        <label>Knowledge Bases</label>
+        <div id="kb-picker" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); min-height:44px;">
+          <span style="color:var(--text-muted); font-size:13px;">No knowledge bases found.</span>
+        </div>
+      </div>
     </div>
     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px;">
       <button onclick="closeAgentModal()" class="btn btn-secondary">Cancel</button>
@@ -163,16 +169,19 @@
   let allModels = [];    // [{key_id, key_name, provider, models:[]}]
   let allTools = [];     // from connector definitions
   let allInstances = []; // connected instances
+  let allKbs = [];       // [{id, name}]
   let agents = [];
   let editingAgentId = null;
 
   async function init() {
-    const [ws, keys, defs, instances] = await Promise.all([
+    const [ws, keys, defs, instances, kbs] = await Promise.all([
       apiGet(`workspaces/${wsId}`),
       apiGet('api-keys'),
       apiGet('connectors/definitions'),
       apiGet('connectors/instances'),
+      apiGet('knowledge-bases').catch(() => []),
     ]);
+    allKbs = kbs || [];
     document.getElementById('ws-name').textContent = ws.name;
     allInstances = instances || [];
 
@@ -227,7 +236,8 @@
           </div>
         </div>
         ${agent.system_prompt ? `<p style="color:var(--text-muted); font-size:12px; line-height:1.5;">${esc(agent.system_prompt.slice(0, 120))}${agent.system_prompt.length > 120 ? '…' : ''}</p>` : ''}
-        ${agent.tools_config?.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${agent.tools_config.map(t => `<span class="badge">${esc(t.tool)}${t.requires_hitl ? ' 🔒' : ''}</span>`).join('')}</div>` : ''}`;
+        ${agent.tools_config?.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${agent.tools_config.map(t => `<span class="badge">${esc(t.tool)}${t.requires_hitl ? ' 🔒' : ''}</span>`).join('')}</div>` : ''}
+        ${agent.kb_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.kb_ids.map(kbId => { const kb = allKbs.find(k => k.id === kbId); return kb ? `<span class="badge" style="background:rgba(99,102,241,.12);color:#6366f1;">📚 ${esc(kb.name)}</span>` : ''; }).join('')}</div>` : ''}`;
       container.appendChild(div);
     });
   }
@@ -252,13 +262,36 @@
     for (const tool of allTools) {
       const label = document.createElement('label');
       label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
-      label.innerHTML = `<input type="checkbox" data-tool='${JSON.stringify(tool)}'> ${esc(tool.connector_slug)}.${esc(tool.name)}${tool.requires_hitl ? ' 🔒' : ''}`;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.tool = JSON.stringify(tool);
+      label.prepend(cb);
+      label.append(` ${esc(tool.connector_slug)}.${esc(tool.name)}${tool.requires_hitl ? ' 🔒' : ''}`);
+      container.appendChild(label);
+    }
+  }
+
+  function renderKbPicker() {
+    const container = document.getElementById('kb-picker');
+    container.innerHTML = '';
+    if (!allKbs.length) {
+      container.innerHTML = '<span style="color:var(--text-muted); font-size:13px;">No knowledge bases — <a href="/knowledge-bases.html">create one</a>.</span>';
+      return;
+    }
+    for (const kb of allKbs) {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
+      label.innerHTML = `<input type="checkbox" data-kb-id="${kb.id}"> ${esc(kb.name)}`;
       container.appendChild(label);
     }
   }
 
   function getSelectedTools() {
     return Array.from(document.querySelectorAll('#tool-picker input:checked')).map(cb => JSON.parse(cb.dataset.tool));
+  }
+
+  function getSelectedKbIds() {
+    return Array.from(document.querySelectorAll('#kb-picker input:checked')).map(cb => cb.dataset.kbId);
   }
 
   async function generatePrompt() {
@@ -290,6 +323,7 @@
     document.getElementById('agent-name').value = agent.name;
     document.getElementById('agent-prompt').value = agent.system_prompt || '';
     renderToolPicker();
+    renderKbPicker();
     if (agent.model_id && agent.api_key_id) {
       document.getElementById('agent-model').value = JSON.stringify({ model_id: agent.model_id, api_key_id: agent.api_key_id });
     }
@@ -298,6 +332,10 @@
         const t = JSON.parse(cb.dataset.tool);
         if (t.name === tc.tool && t.connector_slug === tc.connector_slug) cb.checked = true;
       });
+    });
+    (agent.kb_ids || []).forEach(kbId => {
+      const cb = document.querySelector(`#kb-picker input[data-kb-id="${kbId}"]`);
+      if (cb) cb.checked = true;
     });
     showModal('modal-agent');
   }
@@ -311,6 +349,7 @@
     const tools_config = getSelectedTools().map(t => ({
       tool: t.name, connector_slug: t.connector_slug, requires_hitl: !!t.requires_hitl
     }));
+    const kb_ids = getSelectedKbIds();
 
     let model_id = null, api_key_id = null;
     if (modelVal) { const parsed = JSON.parse(modelVal); model_id = parsed.model_id; api_key_id = parsed.api_key_id; }
@@ -319,9 +358,9 @@
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
       if (editingAgentId) {
-        await apiPut(`agents/${editingAgentId}`, { name, system_prompt: prompt, model_id, api_key_id, tools_config });
+        await apiPut(`agents/${editingAgentId}`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids });
       } else {
-        await apiPost(`workspaces/${wsId}/agents`, { name, system_prompt: prompt, model_id, api_key_id, tools_config });
+        await apiPost(`workspaces/${wsId}/agents`, { name, system_prompt: prompt, model_id, api_key_id, tools_config, kb_ids });
       }
       closeAgentModal();
       await loadAgents();
@@ -341,10 +380,10 @@
     document.getElementById('agent-name').value = '';
     document.getElementById('agent-prompt').value = '';
     document.getElementById('agent-user-desc').value = '';
+    document.querySelectorAll('#kb-picker input').forEach(cb => cb.checked = false);
     hideModal('modal-agent');
   }
 
-  // Show tool picker when modal opens
   document.getElementById('modal-agent').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeAgentModal();
   });
@@ -426,7 +465,7 @@
   function goChat() { window.location.href = `/chat.html?workspace_id=${wsId}`; }
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-  init().then(() => renderToolPicker());
+  init().then(() => { renderToolPicker(); renderKbPicker(); });
 </script>
 </body>
 </html>

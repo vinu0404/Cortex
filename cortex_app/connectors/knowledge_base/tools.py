@@ -22,7 +22,7 @@ async def knowledge_base_search(
 ) -> dict:
     """
     kb_ids and user_id are server-injected — LLM only provides query and optional top_k.
-    Returns chunks with filename, page, section, chunk_type, excerpt, relevance_score, indexed_at.
+    Returns chunks with filename, page, section, chunk_type, excerpt, relevance_score.
     """
     if not kb_ids:
         return {"results": [], "message": "No knowledge bases assigned to this agent"}
@@ -65,13 +65,13 @@ async def knowledge_base_search(
 
     merged.sort(key=lambda x: x.get("rrf_score", 0), reverse=True)
 
-    # Rerank
+    # Rerank — pass top_k so reranker returns the right number, not a second slice
     if merged:
-        merged = await reranker.rerank(query, merged, api_key)
+        merged = await reranker.rerank(query, merged, api_key, top_k=top_k)
 
     # Format output with source metadata
     results = []
-    for item in merged[:top_k]:
+    for item in merged:
         text = item.get("text", "")
         score = item.get("rerank_score", item.get("rrf_score", 0))
         results.append({

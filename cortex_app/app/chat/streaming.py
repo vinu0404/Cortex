@@ -330,6 +330,7 @@ async def _wait_for_hitl_decision(request_id: str) -> dict:
         return {"approved": False, "instructions": None}
     finally:
         await pubsub.unsubscribe(f"hitl:{request_id}")
+        await pubsub.aclose()
 
 
 @retry(
@@ -376,6 +377,16 @@ async def _load_workspace_context(
     master_model = settings.DEFAULT_MODEL
     master_key = ""
 
+    # Load KB assignments for all agents in one query
+    from app.knowledge_bases.db_models import AgentKnowledgeBase
+    agent_ids = [a.id for a in agents]
+    kb_rows = list(await db.scalars(
+        select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
+    )) if agent_ids else []
+    kb_map: dict = {}
+    for row in kb_rows:
+        kb_map.setdefault(row.agent_id, []).append(str(row.kb_id))
+
     for agent in agents:
         agents_db[agent.name] = {
             "id": str(agent.id),
@@ -384,6 +395,7 @@ async def _load_workspace_context(
             "api_key_id": agent.api_key_id,
             "tools_config": agent.tools_config or [],
             "agent_type": agent.agent_type.value,
+            "kb_ids": kb_map.get(agent.id, []),
         }
         if agent.api_key_id and agent.api_key_id not in api_keys_db:
             try:

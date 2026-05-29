@@ -26,7 +26,14 @@ async def list_agents(
     try:
         manager = AgentManager(db)
         agents = await manager.list_agents(workspace_id, current_user.id)
-        return ok([AgentResponse.model_validate(a).model_dump(mode="json") for a in agents])
+        agent_ids = [a.id for a in agents]
+        kb_map = await manager.get_kb_ids_for_agents(agent_ids)
+        result = []
+        for a in agents:
+            resp = AgentResponse.model_validate(a)
+            resp.kb_ids = kb_map.get(a.id, [])
+            result.append(resp.model_dump(mode="json"))
+        return ok(result)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -49,8 +56,11 @@ async def create_agent(
             api_key_id=body.api_key_id,
             display_order=body.display_order,
             tools_config=[t.model_dump() for t in body.tools_config],
+            kb_ids=body.kb_ids or [],
         )
-        return ok(AgentResponse.model_validate(agent).model_dump(mode="json"), status_code=201)
+        resp = AgentResponse.model_validate(agent)
+        resp.kb_ids = body.kb_ids or []
+        return ok(resp.model_dump(mode="json"), status_code=201)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -84,7 +94,10 @@ async def update_agent(
         if "tools_config" in updates:
             updates["tools_config"] = [t if isinstance(t, dict) else t for t in updates["tools_config"]]
         agent = await manager.update_agent(agent_id, current_user.id, **updates)
-        return ok(AgentResponse.model_validate(agent).model_dump(mode="json"))
+        resp = AgentResponse.model_validate(agent)
+        kb_map = await manager.get_kb_ids_for_agents([agent.id])
+        resp.kb_ids = kb_map.get(agent.id, [])
+        return ok(resp.model_dump(mode="json"))
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 

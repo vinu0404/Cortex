@@ -31,8 +31,8 @@ def upgrade() -> None:
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("document_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_knowledge_bases_user_id", "knowledge_bases", ["user_id"])
 
@@ -47,13 +47,14 @@ def upgrade() -> None:
         sa.Column("file_hash", sa.String(64), nullable=True),
         sa.Column("storage_key", sa.String(), nullable=True),
         sa.Column("staging_path", sa.String(), nullable=True),
+        sa.Column("source_url", sa.Text(), nullable=True),
         sa.Column("source_type", sa.Enum("device", "s3_url", "gdrive", name="kbsourcetypeenum"), nullable=False, server_default="device"),
         sa.Column("processing_status", sa.Enum("pending", "uploading", "processing", "ready", "failed", name="kbprocessingstatusenum"), nullable=False, server_default="pending"),
         sa.Column("chunk_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("embedding_model", sa.String(), nullable=True),
         sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_kb_documents_kb_id", "kb_documents", ["kb_id"])
     op.create_index("ix_kb_documents_user_id", "kb_documents", ["user_id"])

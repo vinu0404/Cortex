@@ -67,6 +67,8 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
     import inspect
     registry = get_registry()
     schemas = []
+    # deduplicate while preserving order — OpenAI rejects duplicate function names
+    tool_names = list(dict.fromkeys(tool_names))
     for name in tool_names:
         fn = registry.get_callable(name)
         if not fn:
@@ -75,7 +77,7 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
         props = {}
         required = []
         for param_name, param in sig.parameters.items():
-            if param_name in ("access_token", "instance_url"):
+            if param_name in ("access_token", "instance_url", "kb_ids", "user_id"):
                 continue
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -190,7 +192,11 @@ async def _execute_tool_calls(
         try:
             args = json.loads(tc.function.arguments)
             connector_slug = getattr(fn, "connector", "")
-            if connector_slug and connector_slug in connector_tokens_db:
+            if connector_slug == "__kb__":
+                kb_tokens = connector_tokens_db.get("__kb__", {})
+                args["kb_ids"] = kb_tokens.get("kb_ids", [])
+                args["user_id"] = kb_tokens.get("user_id", "")
+            elif connector_slug and connector_slug in connector_tokens_db:
                 tokens = connector_tokens_db[connector_slug]
                 args["access_token"] = tokens.get("access_token", "")
                 if "instance_url" in tokens:

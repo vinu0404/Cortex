@@ -64,6 +64,7 @@ class KbDocument(Base):
     file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     storage_key: Mapped[str | None] = mapped_column(String, nullable=True)
     staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_type: Mapped[KbSourceTypeEnum] = mapped_column(
         Enum(KbSourceTypeEnum), default=KbSourceTypeEnum.device, nullable=False
     )

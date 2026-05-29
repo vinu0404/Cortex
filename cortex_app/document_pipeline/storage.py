@@ -28,6 +28,11 @@ def build_kb_storage_key(kb_id: str, doc_id: str, filename: str) -> str:
 
 
 def multipart_upload_file(file_path: str, storage_key: str, content_type: str) -> None:
+    import os
+    if os.path.getsize(file_path) == 0:
+        client = _get_client()
+        client.put_object(Bucket=settings.B2_BUCKET, Key=storage_key, Body=b"", ContentType=content_type)
+        return
     client = _get_client()
     mpu = client.create_multipart_upload(Bucket=settings.B2_BUCKET, Key=storage_key, ContentType=content_type)
     upload_id = mpu["UploadId"]
@@ -55,6 +60,10 @@ def multipart_upload_file(file_path: str, storage_key: str, content_type: str) -
 
 
 def multipart_upload_bytes(data: bytes, storage_key: str, content_type: str) -> None:
+    if not data:
+        client = _get_client()
+        client.put_object(Bucket=settings.B2_BUCKET, Key=storage_key, Body=b"", ContentType=content_type)
+        return
     client = _get_client()
     mpu = client.create_multipart_upload(Bucket=settings.B2_BUCKET, Key=storage_key, ContentType=content_type)
     upload_id = mpu["UploadId"]
@@ -89,11 +98,14 @@ def download_file(storage_key: str) -> bytes:
 
 def generate_presigned_url(storage_key: str) -> str:
     client = _get_client()
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": settings.B2_BUCKET, "Key": storage_key},
-        ExpiresIn=settings.B2_PRESIGN_EXPIRY,
-    )
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.B2_BUCKET, "Key": storage_key},
+            ExpiresIn=settings.B2_PRESIGN_EXPIRY,
+        )
+    finally:
+        client.close()
 
 
 def delete_file(storage_key: str) -> None:

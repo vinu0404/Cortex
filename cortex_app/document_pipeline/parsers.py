@@ -25,7 +25,8 @@ def _image_exts() -> set[str]:
     return {e for e in settings.KB_SUPPORTED_EXTENSIONS if e in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}}
 
 
-def parse_document(file_bytes: bytes, filename: str, openai_api_key: str) -> list[ParsedChunkRaw]:
+# BUG-01: was sync + asyncio.run(_parse_image(...)) which crashes inside async context
+async def parse_document(file_bytes: bytes, filename: str, openai_api_key: str) -> list[ParsedChunkRaw]:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         return _parse_pdf(file_bytes)
@@ -36,8 +37,7 @@ def parse_document(file_bytes: bytes, filename: str, openai_api_key: str) -> lis
     if ext in (".txt", ".md"):
         return _parse_text(file_bytes)
     if ext in _image_exts():
-        import asyncio
-        return asyncio.run(_parse_image(file_bytes, filename, openai_api_key))
+        return await _parse_image(file_bytes, filename, openai_api_key)
     raise ValueError(f"Unsupported extension: {ext}")
 
 
@@ -55,10 +55,12 @@ def _parse_pdf(content: bytes) -> list[ParsedChunkRaw]:
     chunks: list[ParsedChunkRaw] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
-            tables = page.extract_tables()
-            table_bboxes = [t.bbox for t in page.find_tables()] if tables else []
+            # BUG-16: call find_tables() once — extract_tables() + find_tables() was two separate calls
+            found_tables = page.find_tables()
+            table_bboxes = [t.bbox for t in found_tables]
 
-            for table_data in tables:
+            for t in found_tables:
+                table_data = t.extract()
                 if not table_data:
                     continue
                 markdown = _table_to_markdown(table_data)
@@ -127,22 +129,20 @@ def _extract_section_heading(text: str) -> str | None:
 
 def _parse_docx(content: bytes) -> list[ParsedChunkRaw]:
     from docx import Document as DocxDocument
+    from docx.text.paragraph import Paragraph as DocxParagraph
 
     doc = DocxDocument(io.BytesIO(content))
     chunks: list[ParsedChunkRaw] = []
     current_section: str | None = None
     current_text_parts: list[str] = []
-    paragraph_index = 0
 
     for block in doc.element.body:
         tag = block.tag.split("}")[-1]
 
         if tag == "p":
-            para = doc.paragraphs[paragraph_index] if paragraph_index < len(doc.paragraphs) else None
-            paragraph_index += 1
-            if not para:
-                continue
-
+            # BUG-17: was using paragraph_index into doc.paragraphs which drifts for
+            # non-paragraph body elements (sectPr, bookmarkStart, etc.). Build directly.
+            para = DocxParagraph(block, doc)
             style = para.style.name if para.style else ""
             text = para.text.strip()
 

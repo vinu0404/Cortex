@@ -141,9 +141,22 @@ async def _run_agent(
     raw_key = context.api_keys_db.get(api_key_id, "") if api_key_id else ""
     model_id = agent_def.get("model_id") or settings.DEFAULT_MODEL
 
+    # Build per-agent connector_tokens with __kb__ injection if agent has KBs
+    kb_ids = agent_def.get("kb_ids", [])
+    per_agent_tokens = dict(context.connector_tokens_db)
+    if kb_ids:
+        per_agent_tokens["__kb__"] = {
+            "kb_ids": [str(k) for k in kb_ids],
+            "user_id": str(context.user_id),
+        }
+        if "knowledge_base_search" not in agent_input.tools:
+            agent_input = agent_input.model_copy(
+                update={"tools": list(agent_input.tools) + ["knowledge_base_search"]}
+            )
+
     start = time.monotonic()
     output = await run_dynamic_agent(
-        agent_input, agent_def, model_id, raw_key, context.connector_tokens_db
+        agent_input, agent_def, model_id, raw_key, per_agent_tokens
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
     output.resource_usage["time_taken_ms"] = elapsed_ms

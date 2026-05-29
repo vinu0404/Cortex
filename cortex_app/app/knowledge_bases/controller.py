@@ -77,9 +77,6 @@ async def upload_documents(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        if len(files) > settings.KB_MAX_FILES_PER_UPLOAD:
-            return fail("TOO_MANY_FILES", f"Too many files. Max: {settings.KB_MAX_FILES_PER_UPLOAD}", 422)
-
         file_tuples = []
         for f in files:
             content = await f.read()
@@ -176,18 +173,41 @@ async def view_document(
 
 @router.get("/knowledge-bases/status/stream")
 async def kb_status_stream(
-    current_user: User = Depends(get_current_user),
+    token: str,
+    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
+    from jose import JWTError, jwt
+    from app.auth.manager import AuthManager
+    from uuid import UUID as _UUID
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        if payload.get("type") != "access":
+            raise ValueError
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            raise ValueError
+        user = await AuthManager(db).get_user_by_id(_UUID(user_id_str))
+        if not user or not user.is_active:
+            raise ValueError
+    except (JWTError, ValueError) as e:
+        logger.error("SSE auth rejected: %s — %s", type(e).__name__, e)
+        from fastapi.responses import Response
+        return Response("Unauthorized", status_code=401)
+
+    user_id = user.id
+
     async def event_generator():
-        redis = await get_async_redis()
-        channel = f"kb_status:{current_user.id}"
+        # BUG-05: get_async_redis() is a sync @lru_cache function — do NOT await it
+        redis = get_async_redis()
+        channel = f"kb_status:{user_id}"
         pubsub = redis.pubsub()
         await pubsub.subscribe(channel)
         try:
             yield "data: connected\n\n"
             async for message in pubsub.listen():
                 if message["type"] == "message":
-                    yield f"data: {message['data'].decode()}\n\n"
+                    # BUG-11: decode_responses=True means data is already str — no .decode()
+                    yield f"data: {message['data']}\n\n"
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
             pass
