@@ -38,6 +38,7 @@ class MessageResponse(BaseModel):
     latency_ms: int | None
     created_at: datetime
     saved_artifacts: list[SavedArtifactResponse] = []
+    sources: list[dict] | None = None
 
     model_config = {"from_attributes": True}
 

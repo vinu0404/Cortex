@@ -606,6 +606,418 @@ async def collection_search(query: str, collection_ids: list, user_id: str, top_
 
 ---
 
+## Adding a New Connector — Complete Guide
+
+This section walks through adding a brand-new connector end-to-end, using a **Data Analyst Agent** that speaks SQL and NoSQL as the example. By the end the agent can answer "What were last month's top 10 customers by revenue?" using live database queries.
+
+---
+
+### What a Connector Is
+
+A connector is a named package under `connectors/` with:
+
+1. **Tool functions** — async callables decorated with `@tool`. The tool registry auto-discovers them at startup.
+2. **A connector definition** — registered in `app/connectors/manager.py` so the platform knows its name, auth type, and available tools.
+3. **An optional credential-storage flow** — for OAuth connectors this is the callback flow; for credentials-based connectors (DB, API key) it's a simple POST endpoint.
+
+Tools receive their credentials **server-side only** — the LLM never sees connection strings or tokens.
+
+---
+
+### Step 1 — Create the connector package
+
+```
+connectors/
+└── database/
+    ├── __init__.py        # empty
+    └── tools.py           # all tool functions live here
+```
+
+```bash
+mkdir -p connectors/database
+touch connectors/database/__init__.py
+touch connectors/database/tools.py
+```
+
+The tool registry auto-discovers `connectors/*/tools.py` at startup via `ToolRegistry.auto_discover()` in `main.py`. No registration needed — just create the file.
+
+---
+
+### Step 2 — Implement tools in `connectors/database/tools.py`
+
+```python
+"""
+Data Analyst connector — SQL (PostgreSQL/MySQL) and NoSQL (MongoDB) tools.
+
+Credentials are server-injected from connector_instances.encrypted_tokens.
+The LLM never sees the connection string or credentials.
+
+connector slug: "database"
+Stored token shape: {
+    "connection_string": "postgresql://user:pass@host:5432/dbname"
+    # OR for MongoDB:
+    # "connection_string": "mongodb://user:pass@host:27017/dbname"
+    "db_type": "postgresql" | "mysql" | "mongodb"
+}
+"""
+
+import logging
+from tools.registry import tool
+
+logger = logging.getLogger(__name__)
+
+
+@tool(
+    description=(
+        "Execute a read-only SQL SELECT query and return results as a list of rows. "
+        "Use for: counting, aggregating, filtering, joining tables. "
+        "Never use for INSERT, UPDATE, DELETE, DROP — those will be rejected."
+    ),
+    requires_hitl=False,
+    connector="database",
+)
+async def sql_query(
+    query: str,
+    access_token: str,     # server-injected: the connection_string
+    limit: int = 100,
+) -> dict:
+    """
+    access_token is server-injected (= connection string). LLM only provides query + limit.
+    Returns: {columns, rows, row_count, query}
+    """
+    _require_read_only(query)
+
+    import asyncpg  # or aiomysql depending on db_type
+    conn = await asyncpg.connect(access_token, statement_cache_size=0)
+    try:
+        # Enforce row cap to avoid blowing context window
+        safe_query = f"SELECT * FROM ({query}) AS _q LIMIT {min(limit, 500)}"
+        records = await conn.fetch(safe_query)
+        columns = list(records[0].keys()) if records else []
+        rows = [list(r.values()) for r in records]
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "query": query,
+            "sources": [{"type": "database", "title": f"SQL query ({len(rows)} rows)", "url": None}],
+        }
+    finally:
+        await conn.close()
+
+
+@tool(
+    description=(
+        "List all tables (or collections for MongoDB) in the database. "
+        "Call this first to understand the schema before writing queries."
+    ),
+    requires_hitl=False,
+    connector="database",
+)
+async def list_tables(access_token: str) -> dict:
+    """Returns: {tables: [str]}"""
+    import asyncpg
+    conn = await asyncpg.connect(access_token, statement_cache_size=0)
+    try:
+        rows = await conn.fetch(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' ORDER BY table_name"
+        )
+        tables = [r["table_name"] for r in rows]
+        return {"tables": tables, "count": len(tables)}
+    finally:
+        await conn.close()
+
+
+@tool(
+    description=(
+        "Return column names, data types, and nullable flags for a given table. "
+        "Use after list_tables to understand a table's structure before querying."
+    ),
+    requires_hitl=False,
+    connector="database",
+)
+async def describe_table(table_name: str, access_token: str) -> dict:
+    """Returns: {table, columns: [{name, type, nullable}]}"""
+    _require_safe_identifier(table_name)
+    import asyncpg
+    conn = await asyncpg.connect(access_token, statement_cache_size=0)
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1
+            ORDER BY ordinal_position
+            """,
+            table_name,
+        )
+        columns = [
+            {"name": r["column_name"], "type": r["data_type"], "nullable": r["is_nullable"] == "YES"}
+            for r in rows
+        ]
+        return {"table": table_name, "columns": columns}
+    finally:
+        await conn.close()
+
+
+@tool(
+    description=(
+        "Run a MongoDB aggregation pipeline or find query. "
+        "Use for document stores, time-series, or nested JSON data. "
+        "Provide collection name and a JSON pipeline list."
+    ),
+    requires_hitl=False,
+    connector="database",
+)
+async def mongodb_query(
+    collection: str,
+    pipeline: list,      # MongoDB aggregation pipeline as JSON list
+    access_token: str,   # server-injected: mongodb connection string
+    limit: int = 100,
+) -> dict:
+    """
+    access_token is server-injected. LLM provides collection + pipeline.
+    Returns: {documents: [...], count}
+    """
+    _require_safe_identifier(collection)
+    import motor.motor_asyncio  # pip install motor
+
+    client = motor.motor_asyncio.AsyncIOMotorClient(access_token)
+    db = client.get_default_database()
+    try:
+        pipeline_with_limit = pipeline + [{"$limit": min(limit, 500)}]
+        cursor = db[collection].aggregate(pipeline_with_limit)
+        docs = []
+        async for doc in cursor:
+            doc.pop("_id", None)   # remove ObjectId — not JSON-serialisable
+            docs.append(doc)
+        return {
+            "documents": docs,
+            "count": len(docs),
+            "collection": collection,
+            "sources": [{"type": "database", "title": f"MongoDB {collection} ({len(docs)} docs)", "url": None}],
+        }
+    finally:
+        client.close()
+
+
+# ── Safety helpers ────────────────────────────────────────────────────────────
+
+_BLOCKED_KEYWORDS = {"insert", "update", "delete", "drop", "truncate", "alter", "create", "grant", "revoke"}
+
+def _require_read_only(query: str) -> None:
+    first_word = query.strip().split()[0].lower()
+    if first_word in _BLOCKED_KEYWORDS:
+        raise ValueError(f"Blocked SQL keyword '{first_word}' — only SELECT queries are allowed.")
+
+def _require_safe_identifier(name: str) -> None:
+    if not name.replace("_", "").isalnum():
+        raise ValueError(f"Unsafe identifier '{name}' — only alphanumeric and underscore allowed.")
+```
+
+**Key points:**
+
+| Aspect | How it works |
+|--------|-------------|
+| `connector="database"` | Tells the runtime to look up `connector_tokens_db["database"]` and inject `access_token` |
+| `access_token` param | Receives the connection string stored in `connector_instances.encrypted_tokens["access_token"]` |
+| Read-only guard | `_require_read_only` blocks write statements before they touch the DB |
+| `sources` key | Tool self-reports its source — picked up by `_extract_sources()` in `dynamic_agent.py` automatically |
+| MongoDB + SQL same slug | Same connector slug `"database"` — user connects one instance per DB. Multiple databases = multiple instances |
+
+---
+
+### Step 3 — Register the connector definition
+
+Open `app/connectors/manager.py` and find `_CONNECTOR_DEFINITIONS`. Add the database entry:
+
+```python
+_CONNECTOR_DEFINITIONS: list[dict] = [
+    # ... existing connectors ...
+    {
+        "slug": "database",
+        "display_name": "Database (SQL / NoSQL)",
+        "auth_type": "credentials",   # not OAuth — user provides connection string
+        "tools": [
+            {"name": "sql_query",     "description": "Execute a SELECT query"},
+            {"name": "list_tables",   "description": "List all tables or collections"},
+            {"name": "describe_table","description": "Show column schema for a table"},
+            {"name": "mongodb_query", "description": "Run a MongoDB aggregation pipeline"},
+        ],
+        "is_active": True,
+    },
+]
+```
+
+`auth_type = "credentials"` tells the UI to show a form (connection string input) instead of an OAuth button.
+
+---
+
+### Step 4 — Add the credential-storage endpoint
+
+`connector_instances.encrypted_tokens` stores arbitrary JSON, encrypted with AES-256-GCM. For credentials-based connectors, add a POST endpoint in `app/connectors/controller.py`:
+
+```python
+@router.post("/connectors/{slug}/connect")
+async def connect_credentials(
+    slug: str,
+    body: CredentialsConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Store user-supplied credentials (connection string, API key, etc.)."""
+    mgr = ConnectorManager(db)
+    defn = await mgr.get_definition_by_slug(slug)
+    if defn.auth_type != "credentials":
+        return fail("CONNECTOR_NOT_CREDENTIALS", "Use OAuth flow for this connector", 400)
+
+    tokens = {"access_token": body.connection_string}  # reuse existing injection pattern
+    instance = await mgr.upsert_instance(
+        user_id=current_user.id,
+        definition_id=defn.id,
+        tokens=tokens,              # encrypted transparently by upsert_instance
+        account_label=body.label or slug,
+    )
+    await db.commit()
+    return ok({"id": str(instance.id), "slug": slug}, status_code=201)
+
+
+class CredentialsConnectRequest(BaseModel):
+    connection_string: str    # e.g. "postgresql://user:pass@host:5432/db"
+    label: str | None = None  # e.g. "Production Postgres"
+```
+
+The `upsert_instance` method already encrypts the token dict — nothing extra needed.
+
+---
+
+### Step 5 — Install the DB driver
+
+Add to `requirements.txt`:
+
+```
+# Database connector
+asyncpg==0.29.0       # PostgreSQL async driver
+aiomysql==0.2.0       # MySQL async driver (optional)
+motor==3.4.0          # MongoDB async driver (optional)
+```
+
+Rebuild the container:
+
+```bash
+make restart
+```
+
+---
+
+### Step 6 — Use it: building the Data Analyst Agent
+
+**In the UI** (`workspace.html`):
+
+1. **Sidebar → Connectors**: Click "Database (SQL/NoSQL)" → paste connection string → Save
+2. **Add Agent** → fill in:
+
+| Field | Value |
+|-------|-------|
+| Name | `DataAnalystAgent` |
+| Model | any — `gpt-4o` recommended for SQL generation |
+| Tools | ☑ `list_tables`  ☑ `describe_table`  ☑ `sql_query`  ☑ `mongodb_query` |
+| System prompt | (see below) |
+
+**System prompt for the Data Analyst Agent:**
+
+```
+You are a Data Analyst Agent with direct read-only access to the database.
+
+## Your workflow
+1. ALWAYS call list_tables first to discover available tables.
+2. Call describe_table for tables relevant to the question — understand columns before writing SQL.
+3. Write a precise SELECT query. Never use INSERT, UPDATE, DELETE, DROP.
+4. Call sql_query with your query. Limit to 100 rows unless the user asks for more.
+5. Interpret the results and return a clear, structured answer.
+
+## Guidelines
+- Prefer JOINs over multiple round-trips.
+- For date ranges: use BETWEEN or >= / <= with explicit dates.
+- For MongoDB: call describe_table on a sample document first (use $limit: 1 in pipeline).
+- If a query fails, explain the error and try an alternative approach.
+- Always show the query you used alongside the results.
+
+## Output format
+- For tabular data: return as a markdown table.
+- For aggregations: summarise the key numbers in prose + include the table.
+- For trends: describe the trend and include the raw data.
+```
+
+---
+
+### Full execution trace for "What were last month's top 10 customers by revenue?"
+
+```
+User query
+  └─► Master Agent (plan)
+        └─► DataAnalystAgent
+              1. list_tables()
+                 → {tables: ["orders", "customers", "products", "line_items"]}
+              2. describe_table("orders")
+                 → {columns: [id, customer_id, created_at, status, total_usd, ...]}
+              3. describe_table("customers")
+                 → {columns: [id, name, email, ...]}
+              4. sql_query("""
+                    SELECT c.name, SUM(o.total_usd) AS revenue
+                    FROM orders o
+                    JOIN customers c ON c.id = o.customer_id
+                    WHERE o.created_at >= date_trunc('month', now() - interval '1 month')
+                      AND o.created_at <  date_trunc('month', now())
+                      AND o.status = 'completed'
+                    GROUP BY c.name
+                    ORDER BY revenue DESC
+                    LIMIT 10
+                 """)
+                 → {columns: ["name","revenue"], rows: [["Acme Corp", 84200], ...]}
+  └─► Composer Agent
+        → Markdown table + prose summary
+        → Sources: [📊 SQL query (10 rows)]
+```
+
+---
+
+### Checklist for any new connector
+
+| Step | File | What to do |
+|------|------|-----------|
+| 1 | `connectors/<slug>/tools.py` | Implement `@tool` functions — `connector="<slug>"`, server-injected params listed but excluded from LLM schema |
+| 2 | `connectors/<slug>/__init__.py` | Empty file (makes it a package) |
+| 3 | `app/connectors/manager.py` | Add entry to `_CONNECTOR_DEFINITIONS` list |
+| 4 | `app/connectors/controller.py` | Add credential POST endpoint (for `auth_type="credentials"`) or OAuth callback (for `auth_type="oauth2"`) |
+| 5 | `requirements.txt` | Add any new Python packages |
+| 6 | `make restart` | Rebuild + restart containers |
+| 7 | Tool result | Add `"sources"` key to return dict — picked up automatically by `_extract_sources()` |
+
+**Server-injected parameter naming convention:**
+
+| What is stored | Param name in tool | `connector_tokens_db` key |
+|----------------|--------------------|--------------------------|
+| OAuth access token | `access_token` | `tokens["access_token"]` |
+| OAuth instance URL (Salesforce) | `instance_url` | `tokens["instance_url"]` |
+| Connection string (DB) | `access_token` | `tokens["access_token"]` |
+| KB IDs | `kb_ids` | `connector_tokens_db["__kb__"]["kb_ids"]` |
+| Collection IDs | `collection_ids` | `connector_tokens_db["__website__"]["collection_ids"]` |
+
+Reusing `access_token` as the param name for connection strings means zero changes to `dynamic_agent.py` — the injection logic already handles it.
+
+**Special slugs** (handled differently from regular connectors):
+
+| Slug | How credentials reach the tool |
+|------|-------------------------------|
+| `"__kb__"` | `kb_ids` + `user_id` injected from `agent_knowledge_bases` rows |
+| `"__website__"` | `collection_ids` + `user_id` injected from `agent_website_collections` rows |
+| `""` (empty) | No injection — tool needs no external credentials (e.g. Tavily — uses server-side API key) |
+| Any other slug | Looks up `connector_instances` for user → decrypts → injects `access_token` (+ `instance_url` if present) |
+
+---
+
 ## LiteLLM Multi-Provider Keys
 
 | Prefix | Provider |

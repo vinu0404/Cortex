@@ -39,6 +39,27 @@ Your job is to decompose the user's query into a structured execution plan.
 4. The same agent definition can appear multiple times (different runtime IDs = independent executions).
 5. Return a valid JSON ExecutionPlan.
 
+## Clarification (use sparingly — prefer assumptions)
+You have full context: conversation history, long-term memory, agent capabilities, and connector tools.
+NEVER ask about information already available in any of these.
+
+If the query is genuinely ambiguous in a way that would materially change which agents or tools you select, you MAY return clarifying questions instead of a plan:
+{
+  "steps": [],
+  "reasoning": "I need clarification before I can plan effectively",
+  "clarification_questions": [
+    {"question": "What output format do you need?", "options": ["PDF report", "CSV data", "Markdown summary", "Other"]},
+    {"question": "Which time period should this cover?", "options": []}
+  ]
+}
+
+Clarification rules:
+- Maximum 3 questions. Each short and specific.
+- "options": non-empty list = user sees clickable chips; empty list = free-text answer.
+- Only ask if the answer genuinely changes the plan (different agents, different tools, different approach).
+- If you can make a reasonable assumption, do so — clarification is a last resort.
+- Never ask about things already in conversation history, long-term memory, or obvious from context.
+
 ## Output Format (strict JSON)
 {
   "steps": [
@@ -50,7 +71,8 @@ Your job is to decompose the user's query into a structured execution plan.
       "tools": ["list of tool names this step may use"]
     }
   ],
-  "reasoning": "string — brief explanation of the plan"
+  "reasoning": "string — brief explanation of the plan",
+  "clarification_questions": []
 }
 """,
         "config": {"type": "text", "label": "production"},

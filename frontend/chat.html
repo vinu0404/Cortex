@@ -6,6 +6,7 @@
   <title>Cortex — Chat</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="/static/css/app.css">
   <style>
     .msg-user { background:var(--accent); color:#fff; border-radius:12px 12px 4px 12px; padding:12px 16px; max-width:75%; align-self:flex-end; }
@@ -36,6 +37,21 @@
     .artifact-code { padding:12px; background:#111; color:#eee; border-radius:var(--radius); margin-top:8px; font-family:monospace; font-size:12px; overflow-x:auto; white-space:pre-wrap; }
     .suggestion-chip { padding:6px 12px; border:1px solid var(--border); border-radius:16px; font-size:12px; cursor:pointer; background:var(--bg); }
     .suggestion-chip:hover { background:var(--surface); }
+    .clarif-chip { display:inline-block; padding:4px 12px; border-radius:999px; border:1px solid var(--border); cursor:pointer; font-size:12px; margin:3px; background:var(--surface); color:var(--text); }
+    .clarif-chip.selected { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .msg-content p { margin:0 0 8px; }
+    .msg-content p:last-child { margin-bottom:0; }
+    .msg-content ul, .msg-content ol { margin:4px 0 8px 18px; }
+    .msg-content li { margin-bottom:2px; }
+    .msg-content code { background:rgba(0,0,0,0.08); padding:1px 4px; border-radius:3px; font-family:monospace; font-size:0.9em; }
+    .msg-content pre { background:rgba(0,0,0,0.08); padding:8px; border-radius:4px; overflow-x:auto; margin:6px 0; }
+    .msg-content pre code { background:none; padding:0; }
+    .msg-content h1, .msg-content h2, .msg-content h3 { font-weight:600; margin:8px 0 4px; }
+    .msg-content strong { font-weight:600; }
+    .msg-content a { color:var(--accent); text-decoration:underline; }
+    .msg-content table { border-collapse:collapse; font-size:13px; margin:6px 0; }
+    .msg-content th, .msg-content td { border:1px solid var(--border); padding:4px 8px; }
+    .msg-content th { background:var(--surface); font-weight:600; }
   </style>
 </head>
 <body style="height:100vh; overflow:hidden;">
@@ -98,6 +114,7 @@
 <script>
   requireAuth();
   mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+  marked.setOptions({ breaks: true, gfm: true });
 
   const params = new URLSearchParams(location.search);
   let wsId = params.get('workspace_id');
@@ -105,6 +122,7 @@
   let pendingHitlId = null;
   let pendingHitlAgentId = null;
   let hitlTimer = null;
+  let currentQuery = '';
   let personas = [];
   let planStages = [];
   let prevCursor = null;
@@ -170,12 +188,14 @@
         msgs.forEach(m => {
           const bubble = appendMessage(m.role, m.content);
           (m.saved_artifacts || []).forEach(a => renderArtifact(bubble, a));
+          if (m.sources && m.sources.length) renderSources(bubble, m.sources);
         });
       } else {
         const prevHeight = container.scrollHeight;
         [...msgs].reverse().forEach(m => {
           const bubble = prependMessage(m.role, m.content);
           (m.saved_artifacts || []).forEach(a => renderArtifact(bubble, a));
+          if (m.sources && m.sources.length) renderSources(bubble, m.sources);
         });
         container.scrollTop = container.scrollHeight - prevHeight;
       }
@@ -206,11 +226,12 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }
 
-  async function sendMessage() {
-    const query = document.getElementById('query-input').value.trim();
+  async function sendMessage(queryOverride = null) {
+    const query = queryOverride || document.getElementById('query-input').value.trim();
     if (!query || !wsId) return;
+    currentQuery = query;
 
-    document.getElementById('query-input').value = '';
+    if (!queryOverride) document.getElementById('query-input').value = '';
     document.getElementById('send-btn').disabled = true;
     document.getElementById('plan-bar').classList.add('hidden'); document.getElementById('plan-flow').innerHTML = ''; planStages = [];
     document.getElementById('compacting-bar').classList.add('hidden');
@@ -255,6 +276,10 @@
         } else if (event === 'hitl_denied') {
           clearHitl(); toast('HITL denied', 'error');
           updatePlanNode(pendingHitlAgentId, 'error'); pendingHitlAgentId = null;
+        } else if (event === 'clarification_required') {
+          renderClarificationForm(assistantEl, data.questions, currentQuery);
+        } else if (event === 'sources') {
+          renderSources(assistantEl, data.sources);
         } else if (event === 'compacting') {
           document.getElementById('compacting-bar').classList.remove('hidden');
         } else if (event === 'conversation_title') {
@@ -262,6 +287,7 @@
           if (item) item.textContent = data.title;
         } else if (event === 'done') {
           updateSystemNode('Composer', 'done');
+          if (fullText) contentEl.innerHTML = marked.parse(fullText);
           convId = data.conversation_id;
           if (data.message_id) assistantEl.dataset.messageId = data.message_id;
           history.replaceState({}, '', `?workspace_id=${wsId}&conversation_id=${convId}`);
@@ -288,7 +314,11 @@
     bubble.className = role === 'user' ? 'msg-user' : 'msg-assistant';
     const content = document.createElement('span');
     content.className = 'msg-content';
-    content.textContent = text;
+    if (role === 'assistant' && text) {
+      content.innerHTML = marked.parse(text);
+    } else {
+      content.textContent = text;
+    }
     bubble.appendChild(content);
     wrap.appendChild(bubble);
     return { wrap, bubble };
@@ -607,6 +637,132 @@
     pendingHitlId = null;
     document.getElementById('hitl-instructions').value = '';
     document.getElementById('hitl-popup').classList.add('hidden');
+  }
+
+  function renderSources(bubble, sources) {
+    if (!sources || !sources.length) return;
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:10px; padding-top:8px; border-top:1px solid var(--border);';
+    const label = document.createElement('div');
+    label.style.cssText = 'font-size:11px; font-weight:600; color:var(--text-muted); margin-bottom:6px; letter-spacing:0.03em; text-transform:uppercase;';
+    label.textContent = 'Sources';
+    wrap.appendChild(label);
+    sources.forEach((s, i) => {
+      const item = document.createElement('div');
+      item.style.cssText = 'font-size:12px; margin-bottom:4px; display:flex; align-items:baseline; gap:4px;';
+      const num = document.createElement('span');
+      num.style.cssText = 'color:var(--text-muted); min-width:18px; flex-shrink:0;';
+      num.textContent = `${i + 1}.`;
+      const link = document.createElement(s.url ? 'a' : 'span');
+      link.style.cssText = 'color:var(--accent); text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:380px; display:inline-block;';
+      if (s.url) { link.href = s.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+      const icon = s.type === 'knowledge_base' ? '📄' : s.type === 'website' ? '🌐' : '🔗';
+      link.textContent = `${icon} ${s.title}${s.page ? ` (p.${s.page})` : ''}`;
+      item.appendChild(num); item.appendChild(link);
+      wrap.appendChild(item);
+    });
+    bubble.appendChild(wrap);
+    scrollBottom();
+  }
+
+  function renderClarificationForm(bubble, questions, originalQuery) {
+    const form = document.createElement('div');
+    form.style.cssText = 'margin-top:8px;';
+
+    const header = document.createElement('p');
+    header.style.cssText = 'font-size:13px; font-weight:600; margin-bottom:10px;';
+    header.textContent = 'I need a few clarifications before I can help:';
+    form.appendChild(header);
+
+    const answers = {};
+
+    questions.forEach((q, i) => {
+      const block = document.createElement('div');
+      block.style.cssText = 'margin-bottom:12px;';
+
+      const qEl = document.createElement('p');
+      qEl.style.cssText = 'font-size:13px; margin-bottom:6px;';
+      qEl.textContent = `${i + 1}. ${q.question}`;
+      block.appendChild(qEl);
+
+      if (q.options && q.options.length > 0) {
+        answers[i] = null;
+        const chipsEl = document.createElement('div');
+        q.options.forEach(opt => {
+          const chip = document.createElement('button');
+          chip.className = 'clarif-chip';
+          chip.type = 'button';
+          chip.textContent = opt;
+          chip.onclick = () => {
+            chipsEl.querySelectorAll('.clarif-chip').forEach(c => c.classList.remove('selected'));
+            chip.classList.add('selected');
+            otherInput.style.display = 'none';
+            answers[i] = opt;
+          };
+          chipsEl.appendChild(chip);
+        });
+
+        const otherChip = document.createElement('button');
+        otherChip.className = 'clarif-chip';
+        otherChip.type = 'button';
+        otherChip.textContent = '✏ Other';
+
+        const otherInput = document.createElement('input');
+        otherInput.type = 'text';
+        otherInput.placeholder = 'Type your answer…';
+        otherInput.style.cssText = 'display:none; margin-top:6px; width:100%; padding:4px 8px; font-size:13px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); box-sizing:border-box;';
+        otherInput.oninput = () => { answers[i] = otherInput.value; };
+
+        otherChip.onclick = () => {
+          chipsEl.querySelectorAll('.clarif-chip').forEach(c => c.classList.remove('selected'));
+          otherChip.classList.add('selected');
+          otherInput.style.display = 'block';
+          otherInput.focus();
+          answers[i] = otherInput.value;
+        };
+
+        chipsEl.appendChild(otherChip);
+        block.appendChild(chipsEl);
+        block.appendChild(otherInput);
+      } else {
+        answers[i] = '';
+        const ta = document.createElement('textarea');
+        ta.className = 'textarea';
+        ta.style.cssText = 'min-height:40px; font-size:13px; resize:none;';
+        ta.placeholder = 'Type your answer…';
+        ta.oninput = () => { answers[i] = ta.value; };
+        block.appendChild(ta);
+      }
+
+      form.appendChild(block);
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.className = 'btn btn-primary btn-sm';
+    submitBtn.style.marginTop = '4px';
+    submitBtn.textContent = 'Submit answers';
+    submitBtn.onclick = () => {
+      for (let i = 0; i < questions.length; i++) {
+        if (!answers[i] && answers[i] !== '') {
+          toast('Please answer all questions', 'error');
+          return;
+        }
+        if (typeof answers[i] === 'string' && !answers[i].trim()) {
+          toast('Please answer all questions', 'error');
+          return;
+        }
+      }
+      const clarificationBlock = questions.map((q, i) => `Q${i + 1}: ${q.question}\nA${i + 1}: ${answers[i]}`).join('\n');
+      const enrichedQuery = `[Clarifications:\n${clarificationBlock}]\n\n${originalQuery}`;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitted…';
+      form.querySelectorAll('button, textarea').forEach(el => { el.disabled = true; });
+      sendMessage(enrichedQuery);
+    };
+    form.appendChild(submitBtn);
+
+    bubble.appendChild(form);
+    scrollBottom();
   }
 
   function scrollBottom() {

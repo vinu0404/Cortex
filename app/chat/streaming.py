@@ -45,6 +45,18 @@ _DB_RETRY_EXCEPTIONS = (OperationalError, InterfaceError)
 _KEY_LOAD_EXCEPTIONS = (OperationalError, InterfaceError, NotFoundError, InvalidTag, ValueError)
 
 
+def _collect_sources(agent_outputs: dict) -> list[dict]:
+    seen: set[str] = set()
+    sources: list[dict] = []
+    for output in agent_outputs.values():
+        for s in output.sources:
+            key = s.url or s.title
+            if key not in seen:
+                seen.add(key)
+                sources.append(s.model_dump())
+    return sources
+
+
 def sse_event(data: str | dict, event: str | None = None) -> str:
     payload = json.dumps(data) if isinstance(data, dict) else data
     if event:
@@ -121,6 +133,16 @@ async def chat_stream(
         )
     except PlanValidationError as e:
         yield sse_event({"message": str(e)}, "error")
+        return
+
+    if plan.clarification_questions:
+        questions_text = "I need a few clarifications before I can help:\n\n" + "\n".join(
+            f"{i + 1}. {q.question}" + (f"\n   Options: {', '.join(q.options)}" if q.options else "")
+            for i, q in enumerate(plan.clarification_questions)
+        )
+        async with get_custom_db_context_session() as db:
+            await ChatManager(db).add_message(conversation_id, MessageRoleEnum.assistant, questions_text)
+        yield sse_event({"questions": [q.model_dump() for q in plan.clarification_questions]}, "clarification_required")
         return
 
     yield sse_event({"stages": _build_plan_stages(plan), "reasoning": plan.reasoning}, "plan")
@@ -275,6 +297,10 @@ async def chat_stream(
     if suggestions:
         yield sse_event({"questions": suggestions}, "suggestions")
 
+    sources = _collect_sources(agent_outputs)
+    if sources:
+        yield sse_event({"sources": sources}, "sources")
+
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
     # Aggregate cost + tokens across all agents + composer
@@ -292,6 +318,7 @@ async def chat_stream(
             latency_ms=elapsed_ms,
             total_cost_usd=round(total_cost, 8) if total_cost > 0 else None,
             token_details=token_details if token_details["total_tokens"] > 0 else None,
+            sources=sources or None,
         )
         message_id = msg.id
         for artifact in artifacts:

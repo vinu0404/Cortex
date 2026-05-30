@@ -97,6 +97,7 @@ class ChatManager:
         total_cost_usd: float | None = None,
         latency_ms: int | None = None,
         langfuse_trace_id: str | None = None,
+        sources: list[dict] | None = None,
     ) -> Message:
         msg = Message(
             conversation_id=conversation_id,
@@ -106,6 +107,7 @@ class ChatManager:
             total_cost_usd=total_cost_usd,
             latency_ms=latency_ms,
             langfuse_trace_id=langfuse_trace_id,
+            sources=sources,
         )
         self._db.add(msg)
         await self._db.flush()

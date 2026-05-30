@@ -63,4 +63,12 @@ async def collection_search(
             "relevance_score": round(float(item.get("score", 0)), 4),
         })
 
-    return {"results": results, "query": query, "collection_ids_searched": collection_ids}
+    return {
+        "results": results,
+        "query": query,
+        "collection_ids_searched": collection_ids,
+        "sources": [
+            {"type": "website", "title": r.get("title") or r["url"], "url": r["url"]}
+            for r in results if r.get("url")
+        ],
+    }

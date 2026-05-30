@@ -13,7 +13,7 @@ from tenacity import (
 
 from app.common.token_utils import TokenUsage, calculate_usage
 from config.settings import get_settings
-from core.schemas import AgentInput, AgentOutput
+from core.schemas import AgentInput, AgentOutput, Source
 from tools.registry import get_registry
 
 settings = get_settings()
@@ -97,6 +97,18 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
     return schemas
 
 
+def _extract_sources(tool_results: list[dict]) -> list[Source]:
+    sources: list[Source] = []
+    seen: set[str] = set()
+    for tr in tool_results:
+        for s in tr.get("result", {}).get("sources", []):
+            key = s.get("url") or s.get("title", "")
+            if key and key not in seen:
+                seen.add(key)
+                sources.append(Source(**s))
+    return sources
+
+
 async def run_dynamic_agent(
     agent_input: AgentInput,
     agent_def: dict,
@@ -141,6 +153,7 @@ async def run_dynamic_agent(
             "time_taken_ms": 0,
         },
         metadata={"model_used": model_id},
+        sources=_extract_sources(tool_results),
     )
 
 

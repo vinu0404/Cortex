@@ -84,4 +84,12 @@ async def knowledge_base_search(
             "relevance_score": round(float(score), 4),
         })
 
-    return {"results": results, "query": query, "kb_ids_searched": kb_ids}
+    return {
+        "results": results,
+        "query": query,
+        "kb_ids_searched": kb_ids,
+        "sources": [
+            {"type": "knowledge_base", "title": r["filename"], "page": r.get("page")}
+            for r in results if r.get("filename")
+        ],
+    }

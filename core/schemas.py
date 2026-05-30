@@ -35,6 +35,13 @@ class AgentInput(BaseModel):
     hitl_context: Optional[HitlResolvedDecision] = None
 
 
+class Source(BaseModel):
+    type: str  # free-form: "web", "knowledge_base", "website", "gmail", "github", etc.
+    title: str
+    url: Optional[str] = None
+    page: Optional[int] = None  # knowledge base page_start
+
+
 class AgentOutput(BaseModel):
     agent_id: str
     agent_name: str
@@ -48,6 +55,7 @@ class AgentOutput(BaseModel):
     resource_usage: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[ArtifactPreview] = Field(default_factory=list)
+    sources: list[Source] = Field(default_factory=list)
 
 
 class PlanStep(BaseModel):
@@ -58,9 +66,15 @@ class PlanStep(BaseModel):
     tools: list[str] = Field(default_factory=list)
 
 
+class ClarificationQuestion(BaseModel):
+    question: str
+    options: list[str] = Field(default_factory=list)  # empty = free-text answer
+
+
 class ExecutionPlan(BaseModel):
     steps: list[PlanStep]
     reasoning: str = ""
+    clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
 
 
 class ResolvedAgentTask(BaseModel):

@@ -46,7 +46,12 @@ async def web_search(
         }
         for r in data.get("results", [])
     ]
-    return {"answer": data.get("answer"), "results": results, "query": data.get("query", query)}
+    return {
+        "answer": data.get("answer"),
+        "results": results,
+        "query": data.get("query", query),
+        "sources": [{"type": "web", "title": r["title"], "url": r["url"]} for r in results if r.get("url")],
+    }
 
 
 @tool(description="Search recent news using Tavily", requires_hitl=False, connector="")
@@ -67,4 +72,8 @@ async def fetch_url(url: str) -> dict:
         resp.raise_for_status()
         data = resp.json()
     results = data.get("results", [])
-    return {"url": url, "content": results[0].get("raw_content", "") if results else ""}
+    return {
+        "url": url,
+        "content": results[0].get("raw_content", "") if results else "",
+        "sources": [{"type": "web", "title": url, "url": url}],
+    }
