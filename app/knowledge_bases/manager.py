@@ -95,7 +95,11 @@ class KnowledgeBaseManager:
         filename: str,
         content_type: str,
         file_size_bytes: int,
-    ) -> dict:
+        file_hash: str | None = None,
+    ):
+        from app.knowledge_bases.models import PresignUploadResponse
+        from document_pipeline.storage import build_kb_storage_key, generate_presigned_put_url
+
         await self._get_kb(kb_id, user_id)
 
         ext = Path(filename).suffix.lower()
@@ -104,8 +108,33 @@ class KnowledgeBaseManager:
         if file_size_bytes > settings.KB_MAX_FILE_SIZE_MB * 1024 * 1024:
             raise ConflictError(f"File too large. Max: {settings.KB_MAX_FILE_SIZE_MB} MB")
 
+        # Hash-based duplicate / resume check
+        if file_hash:
+            existing = await self._db.scalar(
+                select(KbDocument)
+                .where(KbDocument.kb_id == kb_id, KbDocument.file_hash == file_hash)
+                .order_by(KbDocument.created_at.desc())
+                .limit(1)
+            )
+            if existing:
+                if existing.processing_status != KbProcessingStatusEnum.pending_upload:
+                    return PresignUploadResponse(
+                        status="already_exists",
+                        doc_id=existing.id,
+                        filename=existing.filename,
+                    )
+                # Interrupted upload — reissue presigned URL for same storage_key
+                upload_url = generate_presigned_put_url(existing.storage_key, content_type)
+                return PresignUploadResponse(
+                    status="resumable",
+                    doc_id=existing.id,
+                    filename=existing.filename,
+                    upload_url=upload_url,
+                    storage_key=existing.storage_key,
+                    expires_in=settings.B2_PRESIGN_EXPIRY,
+                )
+
         doc_id = uuid.uuid4()
-        from document_pipeline.storage import build_kb_storage_key, generate_presigned_put_url
         storage_key = build_kb_storage_key(str(kb_id), str(doc_id), filename)
 
         doc = KbDocument(
@@ -116,6 +145,7 @@ class KnowledgeBaseManager:
             file_size_bytes=file_size_bytes,
             content_type=content_type,
             storage_key=storage_key,
+            file_hash=file_hash,
             staging_path=None,
             source_type=KbSourceTypeEnum.device,
             processing_status=KbProcessingStatusEnum.pending_upload,
@@ -124,12 +154,14 @@ class KnowledgeBaseManager:
         await self._db.commit()
 
         upload_url = generate_presigned_put_url(storage_key, content_type)
-        return {
-            "doc_id": str(doc_id),
-            "upload_url": upload_url,
-            "storage_key": storage_key,
-            "expires_in": settings.B2_PRESIGN_EXPIRY,
-        }
+        return PresignUploadResponse(
+            status="ready",
+            doc_id=doc_id,
+            filename=filename,
+            upload_url=upload_url,
+            storage_key=storage_key,
+            expires_in=settings.B2_PRESIGN_EXPIRY,
+        )
 
     async def confirm_upload(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
         doc = await self._get_doc(kb_id, doc_id, user_id)

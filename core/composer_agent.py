@@ -91,7 +91,7 @@ async def compose_response(
     failed = {k: v for k, v in agent_outputs.items() if v.error}
 
     outputs_summary = "\n\n".join(
-        f"### {o.agent_name}\n{o.data.get('response', '') if o.data else ''}"
+        f"### {o.agent_name}\n{(o.data.get('response', '') if o.data else '')[:settings.COMPOSER_AGENT_OUTPUT_MAX_CHARS]}"
         for o in successful.values()
     )
     failed_summary = ", ".join(o.agent_name for o in failed.values())

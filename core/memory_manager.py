@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
-    def __init__(self, conversation_id: UUID):
+    def __init__(self, conversation_id: UUID, model_id: str = "gpt-4o"):
         self.conversation_id = conversation_id
+        self._model_id = model_id
         self._messages: list[dict] = []
         self._summaries: list[str] = []
 
@@ -33,7 +34,13 @@ class MemoryManager:
 
     def needs_compression(self) -> bool:
         non_system = sum(1 for m in self._messages if m["role"] != "system")
-        return non_system > settings.SHORT_TERM_MEMORY_WINDOW
+        if non_system > settings.SHORT_TERM_MEMORY_WINDOW:
+            return True
+        try:
+            tokens = litellm.token_counter(model=self._model_id, messages=self._messages)
+            return tokens > settings.SHORT_TERM_COMPRESS_TOKEN_THRESHOLD
+        except Exception:
+            return False
 
     async def compress(self, model_id: str, api_key: str) -> str | None:
         if not self.needs_compression():

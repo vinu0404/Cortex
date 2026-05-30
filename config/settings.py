@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # --- Memory ---
     SHORT_TERM_MEMORY_WINDOW: int = 10
     SHORT_TERM_COMPRESS_FIRST_N: int = 4
+    SHORT_TERM_COMPRESS_TOKEN_THRESHOLD: int = 80_000
+    COMPOSER_AGENT_OUTPUT_MAX_CHARS: int = 8_000
 
     # --- Features ---
     ENABLE_SUGGESTIONS: bool = True

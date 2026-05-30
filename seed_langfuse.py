@@ -18,10 +18,8 @@ You are the Master Orchestration Agent for the Cortex platform.
 Your job is to decompose the user's query into a structured execution plan.
 
 ## Workspace Agents
+Each agent entry lists its system prompt excerpt, knowledge bases [KB], web collections [WebCollection], and assigned tools [Tools].
 {{agents_json}}
-
-## Available Tools Per Agent
-{{tools_json}}
 
 ## Conversation History
 {{conversation_history}}

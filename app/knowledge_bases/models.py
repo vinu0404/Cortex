@@ -40,6 +40,16 @@ class PresignUploadRequest(BaseModel):
     filename: str
     content_type: str
     file_size_bytes: int
+    file_hash: str | None = None  # SHA-256 hex (64 chars), sent by client
+
+
+class PresignUploadResponse(BaseModel):
+    status: str  # "ready" | "already_exists" | "resumable"
+    doc_id: UUID
+    filename: str
+    upload_url: str | None = None
+    storage_key: str | None = None
+    expires_in: int | None = None
 
 
 class S3IngestRequest(BaseModel):

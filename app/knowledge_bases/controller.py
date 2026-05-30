@@ -80,9 +80,9 @@ async def presign_document_upload(
 ) -> JSONResponse:
     try:
         result = await KnowledgeBaseManager(db).presign_upload(
-            kb_id, current_user.id, body.filename, body.content_type, body.file_size_bytes
+            kb_id, current_user.id, body.filename, body.content_type, body.file_size_bytes, body.file_hash
         )
-        return ok(result)
+        return ok(result.model_dump(mode="json"))
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 

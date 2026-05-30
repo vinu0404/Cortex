@@ -278,6 +278,12 @@
 
   // --- Upload ---
 
+  async function computeSHA256(file) {
+    const buf = await file.arrayBuffer();
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
   async function uploadFiles(e) {
     await doUpload(e.target.files);
     e.target.value = '';
@@ -292,12 +298,23 @@
     let pending = 0, rejected = 0;
     for (const file of fileList) {
       try {
-        // Step 1: get presigned PUT URL from backend
+        const fileHash = await computeSHA256(file);
+
+        // Step 1: get presigned PUT URL (server checks for duplicates/resumable by hash)
         const presign = await apiPost(`knowledge-bases/${activeKbId}/documents/presign`, {
           filename: file.name,
           content_type: file.type || 'application/octet-stream',
           file_size_bytes: file.size,
+          file_hash: fileHash,
         });
+
+        if (presign.status === 'already_exists') {
+          toast(`"${file.name}" already exists in this knowledge base.`, 'warning');
+          continue;
+        }
+        if (presign.status === 'resumable') {
+          toast(`Resuming upload for "${file.name}"…`, 'info');
+        }
 
         // Step 2: PUT file directly to B2 — no Authorization header, presigned URL is self-authorizing
         const uploadResp = await fetch(presign.upload_url, {

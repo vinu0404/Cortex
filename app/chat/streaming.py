@@ -105,7 +105,7 @@ async def chat_stream(
         yield sse_event({"message": "No API key configured for Master agent"}, "error")
         return
 
-    mem_mgr = MemoryManager(conversation_id)
+    mem_mgr = MemoryManager(conversation_id, model_id=master_model)
     mem_mgr.load(summaries, recent_messages)
     mem_mgr.add_message("user", query)
 

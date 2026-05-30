@@ -245,22 +245,52 @@ Users upload files → Celery ingests → chunks embedded and stored in Qdrant �
 
 ### Ingestion Pipeline
 
+Supports **duplicate detection** (SHA-256 hash) and **resumable uploads** (same hash in `pending_upload` state reuses the existing record and issues a fresh presigned URL).
+
 ```mermaid
-flowchart TD
-    Presign["POST /knowledge-bases/{id}/documents/presign\nfilename + content_type + file_size_bytes"] --> GenURL["Backend: create KbDocument\nstatus=pending_upload\ngenerate presigned PUT URL"]
-    GenURL --> Direct["Browser PUT directly to B2\nno backend bandwidth or RAM"]
-    Direct --> Confirm["POST /knowledge-bases/{id}/documents/{doc_id}/confirm\nbackend triggers Celery task"]
-    Confirm --> Task["Celery: process_document_task\nacks_late + max_retries=2"]
-    Task --> SetProc["DB: status=processing\nRedis PUBLISH kb_status:user_id"]
+sequenceDiagram
+    participant FE as Frontend
+    participant API as App Server
+    participant B2 as Backblaze B2
+    participant CW as Celery Worker
+    participant Q as Qdrant
 
-    SetProc --> Parse["Parser\nPDF→pypdf, DOCX→python-docx\nCSV→pandas, image→GPT-4o vision"]
-    Parse --> Chunk["Chunker\nsize=1000 tokens, overlap=200\nCSV: 100 rows/chunk"]
-    Chunk --> Embed["Embedder\ntext-embedding-3-small, dim=1536\nbatch=96"]
+    FE->>FE: SHA-256 hash file (crypto.subtle)
+    FE->>API: POST /presign {filename, content_type, file_size_bytes, file_hash}
 
-    Embed --> Qdrant["Qdrant collection: kb_{kb_id}\nDense vector + sparse BM25 text index\nPayload: doc_id, chunk_index, text, section"]
-    Qdrant --> Ready["DB: status=ready, chunk_count\nRedis PUBLISH ready → SSE update"]
+    alt file_hash matches completed/processing/pending doc in same KB
+        API-->>FE: {status: "already_exists", doc_id, filename}
+        FE->>FE: Show toast, cancel upload
+    else file_hash matches pending_upload doc in same KB
+        API->>B2: generate_presigned_put_url(storage_key, content_type)
+        B2-->>API: presigned PUT URL
+        API-->>FE: {status: "resumable", doc_id, upload_url, storage_key}
+        FE->>FE: Show "Resuming…" toast
+        FE->>B2: PUT upload_url (file bytes direct — zero bytes through server)
+        FE->>API: POST /confirm {doc_id}
+        API->>API: KbDocument.status = pending
+        API-->>FE: {doc_id, status: "pending"}
+        API-)CW: process_document_task.delay(doc_id)
+    else no matching hash (new file)
+        API->>API: Create KbDocument (status=pending_upload, file_hash stored)
+        API->>B2: generate_presigned_put_url(storage_key, content_type)
+        B2-->>API: presigned PUT URL
+        API-->>FE: {status: "ready", doc_id, upload_url, storage_key}
+        FE->>B2: PUT upload_url (file bytes direct — zero bytes through server)
+        FE->>API: POST /confirm {doc_id}
+        API->>API: KbDocument.status = pending
+        API-->>FE: {doc_id, status: "pending"}
+        API-)CW: process_document_task.delay(doc_id)
+    end
 
-    Task -->|on_failure| Failed["DB: status=failed, error_message\nRedis PUBLISH failed → SSE update"]
+    CW->>API: Fetch KbDocument from DB
+    CW->>CW: status = processing, publish Redis → SSE → UI
+    CW->>B2: download_file(storage_key)
+    B2-->>CW: file bytes
+    CW->>CW: parse → chunk → embed (PDF/DOCX/CSV/image)
+    CW->>Q: upsert_chunks(kb_id, doc_id, chunks, embeddings)
+    CW->>API: status = ready, increment KB document_count
+    CW-)FE: Redis Pub/Sub → SSE → UI refresh
 ```
 
 ### Retrieval at Chat Time

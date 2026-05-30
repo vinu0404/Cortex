@@ -1,3 +1,4 @@
+import json
 import logging
 
 import litellm
@@ -69,7 +70,7 @@ async def generate_plan(
 ) -> ExecutionPlan:
     registry = get_registry()
 
-    def _agent_context_line(name: str, info: dict) -> str:
+    def _agent_context_line(name: str, info: dict, tool_names: list[str]) -> str:
         lines = [f"- {name}: {info.get('system_prompt', '')[:120]}"]
         for kb in info.get("kb_info", []):
             desc = f" — {kb['description']}" if kb.get("description") else ""
@@ -77,31 +78,34 @@ async def generate_plan(
         for wc in info.get("collection_info", []):
             desc = f" — {wc['description']}" if wc.get("description") else ""
             lines.append(f"  [WebCollection: {wc['name']}{desc}]")
+        if tool_names:
+            lines.append(f"  [Tools: {', '.join(tool_names)}]")
         return "\n".join(lines)
 
-    agents_json = "\n".join(_agent_context_line(name, info) for name, info in agents_db.items())
+    agent_tool_names: dict[str, list[str]] = {}
+    for name, info in agents_db.items():
+        names = [t["tool"] for t in info.get("tools_config", [])]
+        if info.get("kb_ids"):
+            names.append("knowledge_base_search")
+        if info.get("collection_ids"):
+            names.append("collection_search")
+        agent_tool_names[name] = names
+
+    agents_json = "\n".join(
+        _agent_context_line(name, info, agent_tool_names.get(name, []))
+        for name, info in agents_db.items()
+    )
 
     tools_by_agent = {}
-    for name, info in agents_db.items():
-        tool_names = [t["tool"] for t in info.get("tools_config", [])]
-        if info.get("kb_ids"):
-            tool_names.append("knowledge_base_search")
-        if info.get("collection_ids"):
-            tool_names.append("collection_search")
-        if tool_names:
-            schemas = registry.get_tool_schemas(tool_names)
+    for name, names in agent_tool_names.items():
+        if names:
+            schemas = registry.get_tool_schemas(names)
             tools_by_agent[name] = schemas
-
-    tools_json = "\n".join(
-        f"  {agent}: " + ", ".join(t["name"] for t in tools)
-        for agent, tools in tools_by_agent.items()
-    )
 
     prompt_text = get_compiled_prompt("master_agent", {
         "agents_json": agents_json or "No custom agents configured.",
-        "tools_json": tools_json or "No tools configured.",
-        "conversation_history": str(conversation_history[-6:]),
-        "long_term_memory": str(long_term_memory.model_dump()),
+        "conversation_history": str(conversation_history[-settings.SHORT_TERM_MEMORY_WINDOW:]),
+        "long_term_memory": json.dumps(long_term_memory.model_dump()),
         "query": query,
     })
 
