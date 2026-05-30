@@ -57,7 +57,7 @@ class Message(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
-    role: Mapped[MessageRoleEnum] = mapped_column(Enum(MessageRoleEnum, create_type=False), nullable=False)
+    role: Mapped[MessageRoleEnum] = mapped_column(Enum(MessageRoleEnum, name="messagerolenewnum", create_type=False), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)

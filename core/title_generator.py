@@ -1,6 +1,4 @@
-import asyncio
 import logging
-from uuid import UUID
 
 import litellm
 
@@ -12,29 +10,14 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-def schedule_title_generation(
+async def generate_title(
     query: str,
     response: str,
-    conversation_id: UUID,
     model_id: str,
     api_key: str,
-    db_updater,
-) -> None:
-    """Fire-and-forget title generation after first message."""
-    task = asyncio.create_task(
-        _generate_title(query, response, conversation_id, model_id, api_key, db_updater)
-    )
-    task.add_done_callback(lambda t: logger.error("Title gen failed: %s", t.exception()) if t.exception() else None)
-
-
-async def _generate_title(
-    query: str,
-    response: str,
-    conversation_id: UUID,
-    model_id: str,
-    api_key: str,
-    db_updater,
-) -> None:
+) -> str | None:
+    """Returns generated title string or None on failure."""
+    logger.info("Title generation using model %s", model_id)
     prompt_text = get_compiled_prompt("title_generation", {
         "query": query,
         "response_preview": response[:200],
@@ -43,11 +26,13 @@ async def _generate_title(
         resp = await litellm.acompletion(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
-            response_format=TitleGenerationOutput,
+            response_format={"type": "json_object"},
             api_key=api_key,
             metadata={"trace_name": "title_generation"},
         )
         result = TitleGenerationOutput.model_validate_json(resp.choices[0].message.content)
-        await db_updater(conversation_id, result.title)
+        logger.info("Title generated: %r", result.title)
+        return result.title
     except Exception as e:
-        logger.error("Title generation failed for %s: %s", conversation_id, e)
+        logger.error("Title generation failed (model=%s): %s", model_id, e)
+        return None

@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import litellm
-from pydantic import BaseModel
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +16,6 @@ from config.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
-
-class _PromptGenOutput(BaseModel):
-    generated_prompt: str
-    recommended_tools: list[dict]
-    recommended_mcp: list = []
 
 
 class AgentManager:
@@ -157,20 +150,18 @@ class AgentManager:
         from app.api_keys.manager import ApiKeyManager
 
         connector_mgr = ConnectorManager(self._db)
+        definitions = await connector_mgr.list_definitions()
         instances = await connector_mgr.list_user_instances(user_id)
+        connected_slugs = {inst.definition.slug for inst in instances}
 
-        available_tools = []
-        for inst in instances:
-            for tool_def in inst.definition.tools:
-                available_tools.append({
-                    "connector_slug": inst.definition.slug,
-                    **tool_def,
-                })
-
-        tools_json = "\n".join(
-            f"- {t['connector_slug']}.{t['name']}: {t.get('description', '')}"
-            for t in available_tools
-        )
+        tools_lines = []
+        for defn in definitions:
+            status = "connected" if defn.slug in connected_slugs else "not connected"
+            for tool_def in defn.tools:
+                tools_lines.append(
+                    f"- {defn.slug}.{tool_def['name']}: {tool_def.get('description', '')} [{status}]"
+                )
+        tools_context = "\n".join(tools_lines) if tools_lines else "No tools available."
 
         from app.connectors.encryption import decrypt_str
         key_mgr = ApiKeyManager(self._db)
@@ -180,19 +171,18 @@ class AgentManager:
 
         prompt_text = get_compiled_prompt("agent_prompt_generator", {
             "user_description": user_description,
-            "available_tools": tools_json or "No connectors connected yet.",
+            "available_tools": tools_context,
         })
 
         response = await litellm.acompletion(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
-            response_format=_PromptGenOutput,
+            response_format={"type": "json_object"},
             api_key=raw_key,
             metadata={"trace_name": "agent_prompt_generator"},
         )
 
-        result = _PromptGenOutput.model_validate_json(response.choices[0].message.content)
-        return PromptGenerateResponse(**result.model_dump())
+        return PromptGenerateResponse.model_validate_json(response.choices[0].message.content)
 
     async def _get_agent_for_owner(self, agent_id: UUID, user_id: UUID) -> Agent:
         agent = await self._db.get(Agent, agent_id)

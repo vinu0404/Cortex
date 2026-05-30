@@ -17,15 +17,35 @@ Everything runs in containers. No local Python needed.
 cp .env.example .env
 # Edit .env — at minimum: JWT_SECRET, ENCRYPTION_KEY, LANGFUSE_*
 
-# 2. Start all 5 services (Postgres, Redis, Qdrant, FastAPI app, Celery worker)
-docker compose up -d
+# 2. Build images + start all 5 services + migrate + seed (first run)
+make setup
 
-# 3. First run only: apply migrations + seed Langfuse prompts
-docker exec cortex_app-app-1 alembic upgrade head
-docker exec cortex_app-app-1 python seed_langfuse.py
+# Or step by step:
+make build    # build images and start containers
+make migrate  # apply Alembic migrations
+make seed     # seed Langfuse prompts
 ```
 
 App available at `http://localhost:8000`.
+
+### Makefile reference
+
+| Target | Command | What it does |
+|--------|---------|--------------|
+| `make setup` | `build migrate seed` | Full first-run: build + migrate + seed |
+| `make build` | `docker compose up -d --build` | Build images and start all containers |
+| `make up` | `docker compose up -d` | Start containers (no rebuild) |
+| `make down` | `docker compose down` | Stop containers |
+| `make restart` | `down + build` | Full restart with rebuild |
+| `make migrate` | `alembic upgrade head` (in app container) | Apply pending migrations |
+| `make seed` | `python seed_langfuse.py` (in app container) | Seed Langfuse prompts |
+| `make logs` | `docker compose logs -f app` | Tail FastAPI app logs |
+| `make logs-worker` | `docker compose logs -f celery_worker` | Tail Celery worker logs |
+| `make logs-all` | `docker compose logs -f` | Tail all service logs |
+| `make shell` | `docker exec -it cortex_app-app-1 bash` | Open shell in app container |
+| `make ps` | `docker compose ps` | Show container status |
+| `make clean` | `docker compose down -v` | Stop containers and delete volumes |
+| `make nuke` | `docker compose down -v --rmi all` | Full wipe: containers + volumes + images |
 
 | Service | Container | Port | Memory limit |
 |---------|-----------|------|-------------|
@@ -138,7 +158,7 @@ graph TB
     end
 
     API -->|POST /chat/stream| Stream["SSE Streaming Pipeline"]
-    API -->|POST knowledge-bases uploads| KBCtrl["KB Controller"]
+    API -->|presigned PUT URL + POST confirm| KBCtrl["KB Controller"]
     API -->|POST website-collections scrape| WCCtrl["WC Controller"]
 
     Stream --> LoadCtx["Load workspace context\nagents + api keys + connector tokens\nkb_ids + collection_ids per agent"]
@@ -227,8 +247,10 @@ Users upload files → Celery ingests → chunks embedded and stored in Qdrant �
 
 ```mermaid
 flowchart TD
-    Upload["POST /knowledge-bases/upload\nPDF, DOCX, CSV, images, TXT, MD"] --> B2["Store raw file\nB2/S3 or local staging"]
-    B2 --> Task["Celery: ingest_document_task\nacks_late + max_retries=2"]
+    Presign["POST /knowledge-bases/{id}/documents/presign\nfilename + content_type + file_size_bytes"] --> GenURL["Backend: create KbDocument\nstatus=pending_upload\ngenerate presigned PUT URL"]
+    GenURL --> Direct["Browser PUT directly to B2\nno backend bandwidth or RAM"]
+    Direct --> Confirm["POST /knowledge-bases/{id}/documents/{doc_id}/confirm\nbackend triggers Celery task"]
+    Confirm --> Task["Celery: process_document_task\nacks_late + max_retries=2"]
     Task --> SetProc["DB: status=processing\nRedis PUBLISH kb_status:user_id"]
 
     SetProc --> Parse["Parser\nPDF→pypdf, DOCX→python-docx\nCSV→pandas, image→GPT-4o vision"]
@@ -1122,7 +1144,7 @@ All LLM calls and Redis operations use `tenacity`. Settings from `config/setting
 
 ## Observability
 
-All LiteLLM calls auto-traced to Langfuse via `CallbackHandler` at startup. Per-call metadata for trace grouping:
+All LiteLLM calls auto-traced to Langfuse via `litellm.success_callback = ["langfuse"]` set at startup. Per-call metadata for trace grouping:
 
 ```python
 metadata={"trace_name": "dynamic_agent_ResearchAgent", "trace_session_id": str(conversation_id)}

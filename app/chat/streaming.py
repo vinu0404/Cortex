@@ -34,7 +34,7 @@ from core.master_agent import generate_plan
 from core.memory_manager import MemoryManager, schedule_long_term_memory
 from core.orchestrator import OrchestrationContext, execute_plan
 from core.schemas import AgentOutput, ExecutionPlan
-from core.title_generator import schedule_title_generation
+from core.title_generator import generate_title
 from database.session import get_custom_db_context_session
 
 settings = get_settings()
@@ -123,7 +123,7 @@ async def chat_stream(
         yield sse_event({"message": str(e)}, "error")
         return
 
-    yield sse_event({"execution_order": _build_plan_string(plan)}, "plan")
+    yield sse_event({"stages": _build_plan_stages(plan), "reasoning": plan.reasoning}, "plan")
 
     if await request.is_disconnected():
         return
@@ -142,16 +142,27 @@ async def chat_stream(
     )
 
     hitl_futures: dict[str, asyncio.Future] = {}
+    progress_queue: asyncio.Queue[dict] = asyncio.Queue()
 
     def on_hitl_needed(agent_id: str, agent_name: str, tool_names: list[str]) -> asyncio.Future:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         hitl_futures[agent_id] = future
         return future
 
-    for step in plan.steps:
-        yield sse_event({"phase": "executing", "agent_name": step.agent_name}, "status")
+    def on_agent_start(agent_id: str, agent_name: str) -> None:
+        progress_queue.put_nowait({"type": "agent_start", "agent_id": agent_id, "agent_name": agent_name})
 
-    execute_task = asyncio.create_task(execute_plan(plan, ctx, on_hitl_needed))
+    def on_agent_done_cb(output: AgentOutput) -> None:
+        progress_queue.put_nowait({
+            "type": "agent_done",
+            "agent_id": output.agent_id,
+            "agent_name": output.agent_name,
+            "success": output.task_done,
+        })
+
+    execute_task = asyncio.create_task(
+        execute_plan(plan, ctx, on_hitl_needed, on_agent_done=on_agent_done_cb, on_agent_start=on_agent_start)
+    )
 
     # HITL state: one DB record + one SSE event per agent_id, no flooding
     hitl_wait_tasks: dict[str, asyncio.Task] = {}
@@ -161,6 +172,11 @@ async def chat_stream(
         if await request.is_disconnected():
             execute_task.cancel()
             return
+
+        # Drain agent progress events
+        while not progress_queue.empty():
+            ev = progress_queue.get_nowait()
+            yield sse_event(ev, "agent_progress")
 
         for agent_id, future in list(hitl_futures.items()):
             if future.done():
@@ -177,6 +193,7 @@ async def chat_stream(
                 hitl_wait_tasks[agent_id] = asyncio.create_task(_wait_for_hitl_decision(req_id_str))
                 yield sse_event({
                     "request_id": req_id_str,
+                    "agent_id": agent_id,
                     "agent_name": _get_step_name(agent_id, plan),
                     "tool_names": hitl_req.tool_names,
                     "timeout_seconds": settings.HITL_TIMEOUT_SECONDS,
@@ -194,15 +211,20 @@ async def chat_stream(
                     decision = {"approved": False, "instructions": None}
 
                 if decision.get("approved"):
-                    yield sse_event({"request_id": req_id_str, "instructions": decision.get("instructions")}, "hitl_approved")
+                    yield sse_event({"request_id": req_id_str, "agent_id": agent_id, "instructions": decision.get("instructions")}, "hitl_approved")
                 else:
-                    yield sse_event({"request_id": req_id_str}, "hitl_denied")
+                    yield sse_event({"request_id": req_id_str, "agent_id": agent_id}, "hitl_denied")
 
                 future.set_result({"request_id": req_id_str, **decision})
                 hitl_wait_tasks.pop(agent_id, None)
                 hitl_req_ids.pop(agent_id, None)
 
         await asyncio.sleep(0.05)
+
+    # Drain any remaining progress events after task completes
+    while not progress_queue.empty():
+        ev = progress_queue.get_nowait()
+        yield sse_event(ev, "agent_progress")
 
     try:
         agent_outputs: dict[str, AgentOutput] = execute_task.result()
@@ -254,45 +276,67 @@ async def chat_stream(
         yield sse_event({"questions": suggestions}, "suggestions")
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
+
+    # Aggregate cost + tokens across all agents + composer
+    total_input = sum(o.resource_usage.get("input_tokens", 0) for o in agent_outputs.values()) + composer_tokens.input_tokens
+    total_output = sum(o.resource_usage.get("output_tokens", 0) for o in agent_outputs.values()) + composer_tokens.output_tokens
+    total_cost = sum(o.resource_usage.get("cost_usd", 0.0) for o in agent_outputs.values()) + composer_tokens.cost_usd
+    token_details = {"input_tokens": total_input, "output_tokens": total_output, "total_tokens": total_input + total_output}
+
     async with get_custom_db_context_session() as db:
         msg = await ChatManager(db).add_message(
-            conversation_id, MessageRoleEnum.assistant, response_text, latency_ms=elapsed_ms
+            conversation_id,
+            MessageRoleEnum.assistant,
+            response_text,
+            latency_ms=elapsed_ms,
+            total_cost_usd=round(total_cost, 8) if total_cost > 0 else None,
+            token_details=token_details if token_details["total_tokens"] > 0 else None,
         )
         message_id = msg.id
     mem_mgr.add_message("assistant", response_text)
 
     # Record token usage for budget enforcement (fire-and-forget)
-    agent_tokens = sum(o.resource_usage.get("tokens_used", 0) for o in agent_outputs.values())
-    total_tokens = agent_tokens + composer_tokens
-    if total_tokens > 0:
-        asyncio.create_task(TokenBudgetService().record_usage(user_id, total_tokens))
-
-    async def _update_title(conv_id: UUID, title: str) -> None:
-        async with get_custom_db_context_session() as bg_db:
-            await ChatManager(bg_db).update_conversation_title(conv_id, title)
+    if token_details["total_tokens"] > 0:
+        asyncio.create_task(TokenBudgetService().record_usage(user_id, token_details["total_tokens"]))
 
     async def _update_ltm(uid: UUID, facts: dict, prefs: dict) -> None:
         async with get_custom_db_context_session() as bg_db:
             await ChatManager(bg_db).upsert_long_term_memory(uid, facts, prefs)
 
-    if not recent_messages:
-        schedule_title_generation(
-            query, response_text, conversation_id, master_model, master_key, _update_title
-        )
     schedule_long_term_memory(query, response_text, user_id, master_model, master_key, _update_ltm)
 
     yield sse_event({"total_ms": elapsed_ms, "conversation_id": str(conversation_id), "message_id": str(message_id)}, "done")
 
+    # Title generation after done — awaited so we can push title to client without page reload
+    if not recent_messages:
+        title = await generate_title(query, response_text, master_model, master_key)
+        if title:
+            async with get_custom_db_context_session() as db:
+                await ChatManager(db).update_conversation_title(conversation_id, title)
+            yield sse_event({"title": title, "conversation_id": str(conversation_id)}, "conversation_title")
+
 
 # ---- Helpers ----
 
-def _build_plan_string(plan: ExecutionPlan) -> str:
-    parts = ["Master"]
-    for step in plan.steps:
-        tools_str = f"[{','.join(step.tools)}]" if step.tools else ""
-        parts.append(f"{step.agent_name}{tools_str}")
-    parts.append("Composer")
-    return " → ".join(parts)
+def _build_plan_stages(plan: ExecutionPlan) -> list[list[dict]]:
+    """Resolve parallel stages and return structured data for the frontend plan visualizer."""
+    from core.dependency_resolver import resolve_stages
+    from core.schemas import ResolvedAgentTask
+    tasks = [
+        ResolvedAgentTask(
+            agent_id=step.agent_id,
+            agent_name=step.agent_name,
+            task=step.task,
+            depends_on=step.depends_on,
+            tools=step.tools,
+        )
+        for step in plan.steps
+    ]
+    stages = resolve_stages(tasks)
+    return [
+        [{"agent_id": t.agent_id, "agent_name": t.agent_name, "tools": t.tools} for t in stage]
+        for stage in stages
+    ]
 
 
 def _get_step_name(agent_id: str, plan: ExecutionPlan) -> str:

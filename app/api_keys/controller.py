@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api_keys.manager import ApiKeyManager, _mask_key
+from app.api_keys.manager import ApiKeyManager, _is_agent_capable, _mask_key
 from app.api_keys.models import ApiKeyCreate
 from app.auth.dependencies import get_current_user
 from app.auth.db_models import User
@@ -50,7 +50,7 @@ async def list_api_keys(
             "id": str(k.id),
             "key_name": k.key_name,
             "provider": k.provider,
-            "available_models": k.available_models,
+            "available_models": [m for m in (k.available_models or []) if _is_agent_capable(m, k.provider)],
             "created_at": k.created_at.isoformat(),
         } for k in keys])
     except AppError as e:
@@ -67,6 +67,20 @@ async def get_models(
         manager = ApiKeyManager(db)
         models = await manager.get_models(key_id, current_user.id)
         return ok({"models": models})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/{key_id}/refresh", response_model=None)
+async def refresh_api_key_models(
+    key_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        manager = ApiKeyManager(db)
+        models = await manager.refresh_models(key_id, current_user.id)
+        return ok({"models": models, "count": len(models)})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
