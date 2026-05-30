@@ -23,6 +23,8 @@ async def web_search(
     api_key = settings.TAVILY_API_KEY
     if not api_key:
         raise RuntimeError("TAVILY_API_KEY not configured on server")
+    if not query or not query.strip():
+        return {"answer": None, "results": [], "query": query, "sources": [], "error": "Empty query"}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             _SEARCH_URL,

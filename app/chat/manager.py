@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.db_models import (
@@ -114,30 +114,39 @@ class ChatManager:
         return msg
 
     async def load_memory_context(self, conversation_id: UUID) -> tuple[list[str], list[dict]]:
-        summaries_result = await self._db.scalars(
+        summaries_result = list(await self._db.scalars(
             select(ConversationSummary)
             .where(ConversationSummary.conversation_id == conversation_id)
             .order_by(ConversationSummary.created_at.asc())
-        )
+        ))
         summaries = [s.summary for s in summaries_result]
+        summarized_up_to = max((s.message_range_end for s in summaries_result), default=0)
+
+        total_count = await self._db.scalar(
+            select(func.count(Message.id)).where(Message.conversation_id == conversation_id)
+        ) or 0
+        offset = max(summarized_up_to, total_count - settings.SHORT_TERM_MEMORY_WINDOW)
 
         msgs_result = await self._db.scalars(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.asc())
+            .offset(offset)
             .limit(settings.SHORT_TERM_MEMORY_WINDOW)
         )
-        recent = [{"role": m.role.value, "content": m.content} for m in reversed(list(msgs_result))]
+        recent = [{"role": m.role.value, "content": m.content} for m in msgs_result]
         return summaries, recent
 
-    async def save_summary(
-        self, conversation_id: UUID, summary: str, range_start: int, range_end: int
-    ) -> None:
+    async def save_summary(self, conversation_id: UUID, summary: str) -> None:
+        max_end = await self._db.scalar(
+            select(func.max(ConversationSummary.message_range_end))
+            .where(ConversationSummary.conversation_id == conversation_id)
+        ) or 0
         self._db.add(ConversationSummary(
             conversation_id=conversation_id,
             summary=summary,
-            message_range_start=range_start,
-            message_range_end=range_end,
+            message_range_start=max_end,
+            message_range_end=max_end + settings.SHORT_TERM_COMPRESS_FIRST_N,
         ))
 
     async def get_long_term_memory(self, user_id: UUID) -> LongTermMemory:

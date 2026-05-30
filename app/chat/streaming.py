@@ -260,9 +260,7 @@ async def chat_stream(
         summary = await mem_mgr.compress(master_model, master_key)
         if summary:
             async with get_custom_db_context_session() as db:
-                await ChatManager(db).save_summary(
-                    conversation_id, summary, 0, settings.SHORT_TERM_COMPRESS_FIRST_N
-                )
+                await ChatManager(db).save_summary(conversation_id, summary)
 
     if await request.is_disconnected():
         return
@@ -482,6 +480,35 @@ async def _load_workspace_context(
     for row in wc_rows:
         wc_map.setdefault(row.agent_id, []).append(str(row.collection_id))
 
+    # Load KB metadata (name + description) for Master agent context
+    from app.knowledge_bases.db_models import KnowledgeBase
+    from app.website_collections.db_models import WebsiteCollection
+
+    kb_id_list = [row.kb_id for row in kb_rows]
+    kb_meta: dict = {}
+    if kb_id_list:
+        for kb in await db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(kb_id_list))):
+            kb_meta[kb.id] = {"name": kb.name, "description": kb.description or ""}
+
+    kb_info_map: dict = {}
+    for row in kb_rows:
+        kb_info_map.setdefault(row.agent_id, []).append(
+            kb_meta.get(row.kb_id, {"name": str(row.kb_id), "description": ""})
+        )
+
+    # Load WC metadata (name + description) for Master agent context
+    wc_id_list = [row.collection_id for row in wc_rows]
+    wc_meta: dict = {}
+    if wc_id_list:
+        for wc in await db.scalars(select(WebsiteCollection).where(WebsiteCollection.id.in_(wc_id_list))):
+            wc_meta[wc.id] = {"name": wc.name, "description": wc.description or ""}
+
+    wc_info_map: dict = {}
+    for row in wc_rows:
+        wc_info_map.setdefault(row.agent_id, []).append(
+            wc_meta.get(row.collection_id, {"name": str(row.collection_id), "description": ""})
+        )
+
     for agent in agents:
         agents_db[agent.name] = {
             "id": str(agent.id),
@@ -491,7 +518,9 @@ async def _load_workspace_context(
             "tools_config": agent.tools_config or [],
             "agent_type": agent.agent_type.value,
             "kb_ids": kb_map.get(agent.id, []),
+            "kb_info": kb_info_map.get(agent.id, []),
             "collection_ids": wc_map.get(agent.id, []),
+            "collection_info": wc_info_map.get(agent.id, []),
         }
         if agent.api_key_id and agent.api_key_id not in api_keys_db:
             try:

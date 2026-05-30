@@ -35,7 +35,14 @@ def _build_system_prompt(agent_def: dict, agent_input: AgentInput) -> str:
         parts.append(f"\n## Persona\n{persona}")
 
     if agent_input.long_term_memory.critical_facts:
-        parts.append(f"\n## User Context\n{json.dumps(agent_input.long_term_memory.critical_facts)}")
+        facts = {k: v for k, v in agent_input.long_term_memory.critical_facts.items() if v not in (None, "", [], {})}
+        if facts:
+            parts.append(
+                f"\n## User Context\n"
+                f"You know these facts about the user. Use them when answering questions about the user — "
+                f"do NOT say you don't know if the answer is present here.\n"
+                f"{json.dumps(facts)}"
+            )
 
     if agent_input.dependency_outputs:
         parts.append("\n## Outputs from upstream agents:")
@@ -176,25 +183,79 @@ async def _run_with_tools(
     agent_input: AgentInput,
     connector_tokens_db: dict[str, dict],
 ) -> tuple[str, list[dict], TokenUsage]:
-    kwargs: dict[str, Any] = {
-        "model": model_id,
-        "messages": messages,
-        "api_key": api_key,
-        "metadata": {"trace_name": f"dynamic_agent_{agent_input.agent_name}"},
-    }
-    if tool_schemas:
-        kwargs["tools"] = tool_schemas
-        kwargs["tool_choice"] = "auto"
+    msgs = list(messages)
+    all_tool_results: list[dict] = []
+    total_input = total_output = 0
+    total_cost = 0.0
 
-    response = await litellm.acompletion(**kwargs)
+    for _turn in range(5):
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "messages": msgs,
+            "api_key": api_key,
+            "metadata": {"trace_name": f"dynamic_agent_{agent_input.agent_name}"},
+        }
+        if tool_schemas:
+            kwargs["tools"] = tool_schemas
+            kwargs["tool_choice"] = "auto"
+
+        response = await litellm.acompletion(**kwargs)
+        msg = response.choices[0].message
+        u = calculate_usage(response, model_id)
+        total_input += u.input_tokens
+        total_output += u.output_tokens
+        total_cost += u.cost_usd
+
+        if not getattr(msg, "tool_calls", None):
+            return msg.content or "", all_tool_results, TokenUsage(
+                model=model_id,
+                input_tokens=total_input,
+                output_tokens=total_output,
+                total_tokens=total_input + total_output,
+                cost_usd=total_cost,
+            )
+
+        turn_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db)
+        all_tool_results.extend(turn_results)
+
+        msgs.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ],
+        })
+
+        for tc, tr in zip(msg.tool_calls, turn_results):
+            result_payload = tr.get("result") or {"error": tr.get("error", "Tool failed")}
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": tc.function.name,
+                "content": json.dumps(result_payload)[:8000],
+            })
+
+    # Exhausted turns — final call without tools
+    response = await litellm.acompletion(
+        model=model_id,
+        messages=msgs,
+        api_key=api_key,
+        metadata={"trace_name": f"dynamic_agent_{agent_input.agent_name}"},
+    )
     msg = response.choices[0].message
-    usage = calculate_usage(response, model_id)
-
-    tool_results: list[dict] = []
-    if getattr(msg, "tool_calls", None):
-        tool_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db)
-
-    return msg.content or "", tool_results, usage
+    u = calculate_usage(response, model_id)
+    return msg.content or "", all_tool_results, TokenUsage(
+        model=model_id,
+        input_tokens=total_input + u.input_tokens,
+        output_tokens=total_output + u.output_tokens,
+        total_tokens=total_input + u.input_tokens + total_output + u.output_tokens,
+        cost_usd=total_cost + u.cost_usd,
+    )
 
 
 async def _execute_tool_calls(

@@ -283,6 +283,12 @@
     populateModelSelect('composer-model');
     populateModelSelect('agent-model');
 
+    // Restore saved model selection for master/composer
+    const master = agents.find(a => a.agent_type === 'MASTER');
+    if (master?.model_id && master?.api_key_id) restoreModelSelect('master-model', master.model_id, master.api_key_id);
+    const composer = agents.find(a => a.agent_type === 'COMPOSER');
+    if (composer?.model_id && composer?.api_key_id) restoreModelSelect('composer-model', composer.model_id, composer.api_key_id);
+
     const custom = agents.filter(a => a.agent_type === 'CUSTOM');
     custom.forEach(agent => {
       const div = document.createElement('div');
@@ -319,6 +325,30 @@
         sel.appendChild(opt);
       }
     }
+  }
+
+  function restoreModelSelect(id, model_id, api_key_id) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    // Parse each option to compare fields — avoids JSON key-order / whitespace mismatches
+    for (const opt of sel.options) {
+      if (!opt.value) continue;
+      try {
+        const v = JSON.parse(opt.value);
+        if (v.model_id === model_id && String(v.api_key_id) === String(api_key_id)) {
+          sel.value = opt.value;
+          return;
+        }
+      } catch {}
+    }
+    // Model not in available_models list — inject it so saved selection is preserved
+    const keyEntry = allModels.find(k => String(k.key_id) === String(api_key_id));
+    const keyName = keyEntry ? keyEntry.key_name : 'saved key';
+    const opt = document.createElement('option');
+    opt.value = JSON.stringify({ model_id, api_key_id });
+    opt.textContent = `${model_id} (${keyName})`;
+    sel.appendChild(opt);
+    sel.value = opt.value;
   }
 
   function renderToolPicker() {

@@ -69,14 +69,25 @@ async def generate_plan(
 ) -> ExecutionPlan:
     registry = get_registry()
 
-    agents_json = "\n".join(
-        f"- {name}: {info.get('system_prompt', '')[:100]}"
-        for name, info in agents_db.items()
-    )
+    def _agent_context_line(name: str, info: dict) -> str:
+        lines = [f"- {name}: {info.get('system_prompt', '')[:120]}"]
+        for kb in info.get("kb_info", []):
+            desc = f" — {kb['description']}" if kb.get("description") else ""
+            lines.append(f"  [KB: {kb['name']}{desc}]")
+        for wc in info.get("collection_info", []):
+            desc = f" — {wc['description']}" if wc.get("description") else ""
+            lines.append(f"  [WebCollection: {wc['name']}{desc}]")
+        return "\n".join(lines)
+
+    agents_json = "\n".join(_agent_context_line(name, info) for name, info in agents_db.items())
 
     tools_by_agent = {}
     for name, info in agents_db.items():
         tool_names = [t["tool"] for t in info.get("tools_config", [])]
+        if info.get("kb_ids"):
+            tool_names.append("knowledge_base_search")
+        if info.get("collection_ids"):
+            tool_names.append("collection_search")
         if tool_names:
             schemas = registry.get_tool_schemas(tool_names)
             tools_by_agent[name] = schemas
