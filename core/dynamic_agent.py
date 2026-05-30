@@ -11,6 +11,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from app.common.token_utils import TokenUsage, calculate_usage
 from config.settings import get_settings
 from core.schemas import AgentInput, AgentOutput
 from tools.registry import get_registry
@@ -122,7 +123,7 @@ async def run_dynamic_agent(
     ]
 
     ctokens = connector_tokens_db or {}
-    result_text, tool_results, tokens_used = await _run_with_tools(
+    result_text, tool_results, usage = await _run_with_tools(
         messages, tool_schemas, model_id, api_key, agent_input, ctokens
     )
 
@@ -132,7 +133,13 @@ async def run_dynamic_agent(
         task_description=agent_input.task,
         task_done=True,
         data={"response": result_text, "tool_results": tool_results},
-        resource_usage={"tokens_used": tokens_used, "time_taken_ms": 0},
+        resource_usage={
+            "tokens_used": usage.total_tokens,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cost_usd": usage.cost_usd,
+            "time_taken_ms": 0,
+        },
         metadata={"model_used": model_id},
     )
 
@@ -155,7 +162,7 @@ async def _run_with_tools(
     api_key: str,
     agent_input: AgentInput,
     connector_tokens_db: dict[str, dict],
-) -> tuple[str, list[dict], int]:
+) -> tuple[str, list[dict], TokenUsage]:
     kwargs: dict[str, Any] = {
         "model": model_id,
         "messages": messages,
@@ -168,13 +175,13 @@ async def _run_with_tools(
 
     response = await litellm.acompletion(**kwargs)
     msg = response.choices[0].message
-    tokens_used: int = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+    usage = calculate_usage(response, model_id)
 
     tool_results: list[dict] = []
     if getattr(msg, "tool_calls", None):
         tool_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db)
 
-    return msg.content or "", tool_results, tokens_used
+    return msg.content or "", tool_results, usage
 
 
 async def _execute_tool_calls(

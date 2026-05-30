@@ -46,7 +46,7 @@ async def _call_master_llm(
     response = await litellm.acompletion(
         model=model_id,
         messages=messages,
-        response_format=ExecutionPlan,
+        response_format={"type": "json_object"},
         api_key=api_key,
         metadata={
             "trace_name": "master_agent",

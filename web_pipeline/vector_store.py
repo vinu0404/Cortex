@@ -81,8 +81,11 @@ async def delete_url_chunks(collection_id: str, url_id: str) -> None:
             collection_name=_collection_name(collection_id),
             points_selector=Filter(must=[FieldCondition(key="url_id", match=MatchValue(value=url_id))]),
         )
-    except Exception:
-        logger.error("Failed to delete WC chunks for url %s from collection %s", url_id, collection_id, exc_info=True)
+    except Exception as e:
+        if getattr(e, "status_code", None) == 404:
+            logger.warning("Qdrant WC collection not found when deleting chunks for url %s (collection %s) — skipping", url_id, collection_id)
+        else:
+            logger.error("Failed to delete WC chunks for url %s from collection %s", url_id, collection_id, exc_info=True)
     finally:
         await client.close()
 

@@ -50,6 +50,7 @@ async def execute_plan(
     context: OrchestrationContext,
     on_hitl_needed: Callable[[str, str, list[str]], asyncio.Future],
     on_agent_done: Callable[[AgentOutput], None] | None = None,
+    on_agent_start: Callable[[str, str], None] | None = None,
 ) -> dict[str, AgentOutput]:
     """
     Execute plan stages in order. Within each stage, tasks run in parallel.
@@ -70,6 +71,10 @@ async def execute_plan(
     shared_state: dict[str, AgentOutput] = {}
 
     for stage in stages:
+        if on_agent_start:
+            for task in stage:
+                on_agent_start(task.agent_id, task.agent_name)
+
         results = await asyncio.gather(
             *[_run_agent(task, context, shared_state, on_hitl_needed) for task in stage],
             return_exceptions=True,

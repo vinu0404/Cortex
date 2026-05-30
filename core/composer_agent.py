@@ -11,6 +11,7 @@ from tenacity import (
 )
 
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.token_utils import TokenUsage, calculate_usage
 from config.settings import get_settings
 from core.schemas import AgentOutput, LongTermMemory, SuggestionsOutput
 
@@ -53,11 +54,11 @@ async def _call_composer_llm(
     model_id: str,
     api_key: str,
     conversation_id: str,
-) -> tuple[ComposerOutput, int]:
+) -> tuple[ComposerOutput, TokenUsage]:
     response = await litellm.acompletion(
         model=model_id,
         messages=[{"role": "user", "content": prompt_text}],
-        response_format=ComposerOutput,
+        response_format={"type": "json_object"},
         api_key=api_key,
         metadata={
             "trace_name": "composer_agent",
@@ -65,8 +66,8 @@ async def _call_composer_llm(
             "tags": ["orchestration"],
         },
     )
-    tokens: int = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
-    return ComposerOutput.model_validate_json(response.choices[0].message.content), tokens
+    usage = calculate_usage(response, model_id)
+    return ComposerOutput.model_validate_json(response.choices[0].message.content), usage
 
 
 async def compose_response(
@@ -78,8 +79,8 @@ async def compose_response(
     api_key: str,
     conversation_id: str,
     persona: str | None = None,
-) -> tuple[str, list[ComposerArtifact], list[str], int]:
-    """Returns (response_text, artifacts, suggested_questions, tokens_used)."""
+) -> tuple[str, list[ComposerArtifact], list[str], TokenUsage]:
+    """Returns (response_text, artifacts, suggested_questions, token_usage)."""
     successful = {k: v for k, v in agent_outputs.items() if v.task_done and not v.error}
     failed = {k: v for k, v in agent_outputs.items() if v.error}
 
@@ -161,7 +162,7 @@ async def _generate_suggestions(
         resp = await litellm.acompletion(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
-            response_format=SuggestionsOutput,
+            response_format={"type": "json_object"},
             api_key=api_key,
             metadata={"trace_name": "suggestion_generation", "trace_session_id": conversation_id},
         )

@@ -48,7 +48,7 @@ class MemoryManager:
             resp = await litellm.acompletion(
                 model=model_id,
                 messages=[{"role": "user", "content": prompt_text}],
-                response_format=MemoryCompressionOutput,
+                response_format={"type": "json_object"},
                 api_key=api_key,
                 metadata={"trace_name": "memory_compression"},
             )
@@ -101,7 +101,7 @@ async def _evaluate_long_term(
         resp = await litellm.acompletion(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
-            response_format=LongTermMemoryExtraction,
+            response_format={"type": "json_object"},
             api_key=api_key,
             metadata={"trace_name": "long_term_memory"},
         )
