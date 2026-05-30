@@ -78,7 +78,7 @@ def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
         props = {}
         required = []
         for param_name, param in sig.parameters.items():
-            if param_name in ("access_token", "instance_url", "kb_ids", "user_id", "collection_ids"):
+            if param_name in ("access_token", "instance_url", "kb_ids", "user_id", "collection_ids", "db_type"):
                 continue
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -225,6 +225,8 @@ async def _execute_tool_calls(
                 args["access_token"] = tokens.get("access_token", "")
                 if "instance_url" in tokens:
                     args["instance_url"] = tokens["instance_url"]
+                if "db_type" in tokens:
+                    args["db_type"] = tokens["db_type"]
             result = await fn(**args)
             results.append({"tool": fn_name, "result": result})
         except (TypeError, json.JSONDecodeError) as e:

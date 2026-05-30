@@ -33,3 +33,15 @@ class ConnectorInstanceResponse(BaseModel):
 class AuthUrlResponse(BaseModel):
     auth_url: str
     state: str
+
+
+class CredentialsConnectRequest(BaseModel):
+    connection_string: str
+    db_type: str
+    label: str | None = None
+
+
+class CredentialsConnectResponse(BaseModel):
+    id: UUID
+    slug: str
+    account_label: str | None

@@ -10,7 +10,7 @@ from app.auth.db_models import User
 from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.connectors.manager import ConnectorManager
-from app.connectors.models import ConnectorDefinitionResponse, ConnectorInstanceResponse
+from app.connectors.models import ConnectorDefinitionResponse, ConnectorInstanceResponse, CredentialsConnectRequest
 from database.session import get_db
 
 router = APIRouter()
@@ -51,6 +51,28 @@ async def list_instances(
                 "created_at": inst.created_at.isoformat(),
             })
         return ok(result)
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/{slug}/connect", response_model=None)
+async def connect_credentials(
+    slug: str,
+    body: CredentialsConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = ConnectorManager(db)
+        instance = await mgr.connect_credentials(
+            user_id=current_user.id,
+            slug=slug,
+            connection_string=body.connection_string,
+            db_type=body.db_type,
+            label=body.label,
+        )
+        await db.commit()
+        return ok({"id": str(instance.id), "slug": slug, "account_label": instance.account_label}, status_code=201)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 

@@ -64,6 +64,10 @@ requests-oauthlib==2.0.0
 google-auth==2.37.0
 google-auth-oauthlib==1.2.1
 
+# Database connector drivers
+motor==3.6.0
+aiomysql==0.2.0
+
 # Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0

@@ -142,6 +142,41 @@
   </div>
 </div>
 
+<!-- Credentials connector modal -->
+<div id="credentials-modal" class="modal-overlay hidden">
+  <div class="modal" style="width:min(440px,95vw);">
+    <div class="modal-header">
+      <span class="modal-title" id="cred-modal-title">Connect Database</span>
+      <button class="modal-close" onclick="closeCredentialsModal()">×</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <div class="form-group">
+        <label>Database Type</label>
+        <select id="cred-db-type" class="select">
+          <option value="postgresql">PostgreSQL</option>
+          <option value="mysql">MySQL</option>
+          <option value="mongodb">MongoDB</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Connection String</label>
+        <input id="cred-connection-string" type="password" class="input"
+          placeholder="postgresql://user:pass@host:5432/dbname" autocomplete="off" />
+        <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Stored encrypted. Never sent to the LLM.</div>
+      </div>
+      <div class="form-group">
+        <label>Label <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
+        <input id="cred-label" type="text" class="input" placeholder="Production DB" />
+      </div>
+      <div id="cred-error" style="color:var(--danger,#e53e3e); font-size:13px; display:none;"></div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px;">
+      <button onclick="closeCredentialsModal()" class="btn btn-secondary">Cancel</button>
+      <button id="cred-save-btn" onclick="saveCredentials()" class="btn btn-primary">Connect</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add API Key Modal -->
 <div id="modal-add-key" class="modal-overlay hidden">
   <div class="modal">
@@ -212,6 +247,26 @@
     renderApiKeys(keys || []);
     renderConnectors(defs || [], instances || []);
     await loadAgents();
+  }
+
+  async function reloadConnectors() {
+    const [defs, instances] = await Promise.all([
+      apiGet('connectors/definitions'),
+      apiGet('connectors/instances'),
+    ]);
+    allInstances = instances || [];
+    allTools = [];
+    for (const inst of allInstances) {
+      const def = (defs || []).find(d => d.slug === inst.slug);
+      if (def) def.tools.forEach(t => allTools.push({ ...t, connector_slug: inst.slug }));
+    }
+    for (const def of (defs || [])) {
+      if (def.auth_type === 'apikey') {
+        def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
+      }
+    }
+    renderConnectors(defs || [], instances || []);
+    renderToolPicker();
   }
 
   async function loadAgents() {
@@ -471,29 +526,107 @@
 
   function renderConnectors(defs, instances) {
     const el = document.getElementById('connectors-list');
-    const connected = new Set(instances.map(i => i.slug));
-    el.innerHTML = defs.map(d => `
-      <div style="display:flex; align-items:center; justify-content:space-between; padding:8px; border:1px solid var(--border); border-radius:var(--radius); font-size:13px;">
-        <div style="display:flex; align-items:center; gap:6px;">
-          <span>${esc(d.icon || '')}</span>
-          <div>
-            <div style="font-weight:500;">${esc(d.display_name)}</div>
-            <div style="color:var(--text-muted); font-size:11px;">${d.tools?.length || 0} tools</div>
+    const connectedMap = Object.fromEntries(instances.map(i => [i.slug, i]));
+    el.innerHTML = defs.map(d => {
+      let actionHtml;
+      if (d.auth_type === 'apikey') {
+        actionHtml = '<span class="badge" style="color:var(--accent,#6366f1);">Built-in</span>';
+      } else if (connectedMap[d.slug]) {
+        const inst = connectedMap[d.slug];
+        actionHtml = `<div style="display:flex;align-items:center;gap:6px;">
+          <span class="badge" style="color:green;">Connected</span>
+          <button onclick="disconnectConnector('${inst.id}')" class="btn btn-ghost btn-sm" title="Disconnect">✕</button>
+        </div>`;
+      } else if (d.auth_type === 'credentials') {
+        actionHtml = `<button onclick="openCredentialsModal('${d.slug}','${esc(d.display_name)}')" class="btn btn-secondary btn-sm">Connect</button>`;
+      } else {
+        actionHtml = `<button onclick="connectOAuth('${d.slug}')" class="btn btn-secondary btn-sm">Connect</button>`;
+      }
+      const slugId = `tools-${d.slug}`;
+      const toolList = (d.tools || []).map(t =>
+        `<div style="display:flex;align-items:center;gap:4px;padding:2px 0;">
+          <span style="color:var(--text-muted);font-size:10px;">▸</span>
+          <span style="font-family:monospace;font-size:10px;color:var(--text-muted);">${esc(t.name)}</span>
+          ${t.requires_hitl ? '<span style="font-size:9px;color:#f59e0b;" title="Requires approval">🔒</span>' : ''}
+        </div>`
+      ).join('');
+      return `<div style="padding:8px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span>${esc(d.icon || '')}</span>
+            <div>
+              <div style="font-weight:500;">${esc(d.display_name)}</div>
+              <div style="color:var(--text-muted);font-size:11px;">${d.tools?.length || 0} tools</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <button onclick="toggleTools('${slugId}',this)" class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 6px;">Tools ▾</button>
+            ${actionHtml}
           </div>
         </div>
-        ${d.auth_type === 'apikey'
-          ? '<span class="badge" style="color:blue;">Built-in</span>'
-          : connected.has(d.slug)
-            ? '<span class="badge" style="color:green;">Connected</span>'
-            : `<button onclick="connectConnector('${d.slug}')" class="btn btn-secondary btn-sm">Connect</button>`}
-      </div>`).join('');
+        <div id="${slugId}" style="display:none;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);">${toolList}</div>
+      </div>`;
+    }).join('');
   }
 
-  async function connectConnector(slug) {
+  function toggleTools(id, btn) {
+    const el = document.getElementById(id);
+    const open = el.style.display === 'block';
+    el.style.display = open ? 'none' : 'block';
+    btn.textContent = open ? 'Tools ▾' : 'Tools ▴';
+  }
+
+  async function connectOAuth(slug) {
     try {
       const data = await apiGet(`connectors/${slug}/auth-url`);
       window.open(data.auth_url, '_blank');
     } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function disconnectConnector(instanceId) {
+    if (!confirm('Disconnect this connector?')) return;
+    try {
+      await apiDelete(`connectors/instances/${instanceId}`);
+      toast('Disconnected');
+      await reloadConnectors();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  let _credSlug = null;
+  function openCredentialsModal(slug, displayName) {
+    _credSlug = slug;
+    document.getElementById('cred-modal-title').textContent = `Connect ${displayName}`;
+    document.getElementById('cred-connection-string').value = '';
+    document.getElementById('cred-label').value = '';
+    document.getElementById('cred-error').style.display = 'none';
+    showModal('credentials-modal');
+  }
+
+  function closeCredentialsModal() {
+    hideModal('credentials-modal');
+    _credSlug = null;
+  }
+
+  async function saveCredentials() {
+    const cs = document.getElementById('cred-connection-string').value.trim();
+    const dbType = document.getElementById('cred-db-type').value;
+    const label = document.getElementById('cred-label').value.trim() || null;
+    const errEl = document.getElementById('cred-error');
+    const btn = document.getElementById('cred-save-btn');
+    if (!cs) { errEl.textContent = 'Connection string is required.'; errEl.style.display = ''; return; }
+    errEl.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Connecting…';
+    try {
+      await apiPost(`connectors/${_credSlug}/connect`, { connection_string: cs, db_type: dbType, label });
+      closeCredentialsModal();
+      toast('Connected!');
+      await reloadConnectors();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.style.display = '';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Connect';
+    }
   }
 
   function updateMasterAgent() {

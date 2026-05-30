@@ -72,6 +72,18 @@ _CONNECTOR_DEFINITIONS = [
             {"name": "fetch_url", "description": "Extract content from a URL", "requires_hitl": False},
         ],
     },
+    {
+        "slug": "database",
+        "display_name": "Database",
+        "auth_type": "credentials",
+        "icon": "🗄️",
+        "tools": [
+            {"name": "sql_query",      "description": "Execute a read-only SELECT query",       "requires_hitl": False},
+            {"name": "list_tables",    "description": "List all tables or collections",          "requires_hitl": False},
+            {"name": "describe_table", "description": "Show column schema for a table",          "requires_hitl": False},
+            {"name": "mongodb_query",  "description": "Run a MongoDB aggregation pipeline",      "requires_hitl": False},
+        ],
+    },
 ]
 
 
@@ -160,6 +172,42 @@ class ConnectorManager:
 
         return instance
 
+    async def connect_credentials(
+        self,
+        user_id: UUID,
+        slug: str,
+        connection_string: str,
+        db_type: str,
+        label: str | None = None,
+    ) -> ConnectorInstance:
+        from sqlalchemy import delete as sa_delete
+        defn = await self._get_definition(slug)
+        if defn.auth_type.value != "credentials":
+            from app.common.exceptions import AppError
+            raise AppError("CONNECTOR_NOT_CREDENTIALS", "This connector uses OAuth — use the connect flow", 400)
+
+        tokens = {"access_token": connection_string, "db_type": db_type}
+        encrypted = encrypt_json(tokens)
+        account_label = label or f"{db_type} database"
+
+        await self._db.execute(
+            sa_delete(ConnectorInstance).where(
+                ConnectorInstance.user_id == user_id,
+                ConnectorInstance.definition_id == defn.id,
+            )
+        )
+
+        instance = ConnectorInstance(
+            user_id=user_id,
+            definition_id=defn.id,
+            encrypted_tokens=encrypted,
+            account_label=account_label,
+            status=ConnectorStatusEnum.active,
+        )
+        self._db.add(instance)
+        await self._db.flush()
+        return instance
+
     async def refresh_connector_tokens(self, instance: ConnectorInstance) -> dict:
         connector = self._get_connector_class(instance.definition.slug)()
         new_tokens = await connector.refresh_access_token(decrypt_json(instance.encrypted_tokens))
@@ -204,3 +252,10 @@ class ConnectorManager:
         if not cls:
             raise NotFoundError("Connector", slug)
         return cls
+
+    async def _get_connector_class_safe(self, slug: str):
+        """Like _get_connector_class but returns None for credentials-type connectors."""
+        defn = await self._get_definition(slug)
+        if defn.auth_type.value == "credentials":
+            return None
+        return self._get_connector_class(slug)

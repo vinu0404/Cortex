@@ -12,6 +12,7 @@ from database.session import Base
 class AuthTypeEnum(str, enum.Enum):
     oauth2 = "oauth2"
     apikey = "apikey"
+    credentials = "credentials"
 
 
 class ConnectorStatusEnum(str, enum.Enum):
