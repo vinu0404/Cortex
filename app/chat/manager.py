@@ -215,6 +215,7 @@ class ChatManager:
         title: str,
         filename: str,
         storage_key: str,
+        content: str | None = None,
     ) -> MessageArtifact:
         artifact = MessageArtifact(
             message_id=message_id,
@@ -224,6 +225,7 @@ class ChatManager:
             title=title,
             filename=filename,
             storage_key=storage_key,
+            content=content,
         )
         self._db.add(artifact)
         await self._db.flush()

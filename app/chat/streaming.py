@@ -284,7 +284,8 @@ async def chat_stream(
     token_details = {"input_tokens": total_input, "output_tokens": total_output, "total_tokens": total_input + total_output}
 
     async with get_custom_db_context_session() as db:
-        msg = await ChatManager(db).add_message(
+        chat_mgr = ChatManager(db)
+        msg = await chat_mgr.add_message(
             conversation_id,
             MessageRoleEnum.assistant,
             response_text,
@@ -293,6 +294,18 @@ async def chat_stream(
             token_details=token_details if token_details["total_tokens"] > 0 else None,
         )
         message_id = msg.id
+        for artifact in artifacts:
+            if artifact.type == "mermaid":
+                await chat_mgr.save_artifact(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    type="mermaid",
+                    title=artifact.title,
+                    filename="",
+                    storage_key="",
+                    content=artifact.content,
+                )
     mem_mgr.add_message("assistant", response_text)
 
     # Record token usage for budget enforcement (fire-and-forget)

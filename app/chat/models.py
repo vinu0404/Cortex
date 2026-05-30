@@ -24,7 +24,8 @@ class SavedArtifactResponse(BaseModel):
     type: str
     title: str
     filename: str
-    url: str  # fresh presigned URL generated at load time
+    url: str | None = None       # None for mermaid/code (no B2 storage)
+    content: str | None = None   # populated for mermaid/code
 
     model_config = {"from_attributes": True}
 

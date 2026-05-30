@@ -89,16 +89,23 @@ async def get_messages(
         artifact_map = await chat_mgr.get_artifacts_for_messages([m.id for m in messages])
 
         loop = asyncio.get_running_loop()
-        # Flatten all artifacts, generate all presigned URLs in parallel, then reassemble
-        flat_artifacts = [(m.id, a) for m in messages for a in artifact_map.get(m.id, [])]
+        # Split: mermaid/code stored inline (content), PDF/CSV stored in B2 (presigned URL)
+        _inline_types = {"mermaid", "code"}
+        b2_artifacts = [(m.id, a) for m in messages for a in artifact_map.get(m.id, []) if a.type not in _inline_types]
+        inline_artifacts = [(m.id, a) for m in messages for a in artifact_map.get(m.id, []) if a.type in _inline_types]
+
         urls = await asyncio.gather(*[
             loop.run_in_executor(None, generate_presigned_url, a.storage_key)
-            for _, a in flat_artifacts
+            for _, a in b2_artifacts
         ])
         url_map: dict[UUID, list[SavedArtifactResponse]] = {}
-        for (msg_id, a), url in zip(flat_artifacts, urls):
+        for (msg_id, a), url in zip(b2_artifacts, urls):
             url_map.setdefault(msg_id, []).append(
                 SavedArtifactResponse(id=a.id, type=a.type, title=a.title, filename=a.filename, url=url)
+            )
+        for msg_id, a in inline_artifacts:
+            url_map.setdefault(msg_id, []).append(
+                SavedArtifactResponse(id=a.id, type=a.type, title=a.title, filename=a.filename, content=a.content)
             )
 
         result = []
