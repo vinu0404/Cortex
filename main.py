@@ -35,7 +35,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     os.environ.setdefault("LANGFUSE_HOST", settings.LANGFUSE_BASE_URL or "")
     litellm.success_callback = ["langfuse"]
     litellm.failure_callback = ["langfuse"]
-    litellm.set_verbose = settings.is_dev
+    litellm.set_verbose = False
+    litellm.suppress_debug_info = True  # silences "Give Feedback / Get Help" prints
+    # Suppress LiteLLM's internal loggers — they flood stdout with full request/response JSON
+    for _log_name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
+        logging.getLogger(_log_name).setLevel(logging.WARNING)
 
     from app.connectors.manager import ConnectorManager
     from database.session import get_custom_db_context_session

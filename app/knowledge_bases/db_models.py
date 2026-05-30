@@ -16,11 +16,13 @@ class KbSourceTypeEnum(str, enum.Enum):
 
 
 class KbProcessingStatusEnum(str, enum.Enum):
+    pending_upload = "pending_upload"
     pending = "pending"
     uploading = "uploading"
     processing = "processing"
     ready = "ready"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class KnowledgeBase(Base):
@@ -75,6 +77,7 @@ class KbDocument(Base):
     embedding_model: Mapped[str | None] = mapped_column(String, nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

@@ -20,6 +20,19 @@ from config.settings import get_settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+_CANCELLABLE_STATUSES = {
+    KbProcessingStatusEnum.pending_upload,
+    KbProcessingStatusEnum.pending,
+    KbProcessingStatusEnum.uploading,
+    KbProcessingStatusEnum.processing,
+}
+
+_REINDEXABLE_STATUSES = {
+    KbProcessingStatusEnum.ready,
+    KbProcessingStatusEnum.failed,
+    KbProcessingStatusEnum.cancelled,
+}
+
 
 class KnowledgeBaseManager:
     def __init__(self, db: AsyncSession):
@@ -127,7 +140,9 @@ class KnowledgeBaseManager:
         await self._db.commit()
 
         from document_pipeline.tasks import process_document_task
-        process_document_task.delay(str(doc_id))
+        result = process_document_task.delay(str(doc_id))
+        doc.celery_task_id = result.id
+        await self._db.commit()
         return doc
 
     async def ingest_from_s3(
@@ -165,7 +180,9 @@ class KnowledgeBaseManager:
             creds["region"] = region or "us-east-1"
 
         from document_pipeline.tasks import ingest_from_s3_task
-        ingest_from_s3_task.delay(str(doc.id), url, creds)
+        result = ingest_from_s3_task.delay(str(doc.id), url, creds)
+        doc.celery_task_id = result.id
+        await self._db.commit()
 
         return doc
 
@@ -180,10 +197,18 @@ class KnowledgeBaseManager:
                 .values(document_count=KnowledgeBase.document_count - 1)
             )
 
+        task_id = doc.celery_task_id
         storage_key = doc.storage_key
         # commit DB first — if external cleanup fails, doc is still gone
         await self._db.delete(doc)
         await self._db.commit()
+
+        if task_id:
+            try:
+                from celery_app import celery_app
+                celery_app.control.revoke(task_id, terminate=True)
+            except Exception:
+                logger.warning("Could not revoke task %s for doc %s — task may still run", task_id, doc_id)
 
         # B2 delete is sync boto3 — run in executor
         if storage_key:
@@ -207,11 +232,72 @@ class KnowledgeBaseManager:
         # dispatch correct task based on source_type
         if doc.source_type == KbSourceTypeEnum.s3_url:
             from document_pipeline.tasks import ingest_from_s3_task
-            ingest_from_s3_task.delay(str(doc_id), doc.source_url or "", {})
+            result = ingest_from_s3_task.delay(str(doc_id), doc.source_url or "", {})
         else:
             from document_pipeline.tasks import process_document_task
-            process_document_task.delay(str(doc_id))
+            result = process_document_task.delay(str(doc_id))
+
+        doc.celery_task_id = result.id
+        await self._db.commit()
         return doc
+
+    async def cancel_document(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
+        doc = await self._get_doc(kb_id, doc_id, user_id)
+        if doc.processing_status not in _CANCELLABLE_STATUSES:
+            raise ConflictError("Document cannot be cancelled in its current state")
+
+        task_id = doc.celery_task_id
+        doc.processing_status = KbProcessingStatusEnum.cancelled
+        doc.celery_task_id = None
+        await self._db.commit()
+
+        if task_id:
+            from celery_app import celery_app
+            celery_app.control.revoke(task_id, terminate=True)
+
+        return doc
+
+    async def reindex_kb(self, kb_id: UUID, user_id: UUID) -> int:
+        """Re-process all ready/failed/cancelled docs. Surgical: only deletes chunks for targeted docs."""
+        await self._get_kb(kb_id, user_id)
+        docs_result = await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb_id))
+        docs = list(docs_result)
+
+        to_dispatch: list[KbDocument] = []
+        ready_count_delta = 0
+
+        from document_pipeline import vector_store
+        for doc in docs:
+            if doc.processing_status not in _REINDEXABLE_STATUSES:
+                continue
+            await vector_store.delete_document_chunks(str(kb_id), str(doc.id))
+            if doc.processing_status == KbProcessingStatusEnum.ready:
+                ready_count_delta += 1
+            doc.processing_status = KbProcessingStatusEnum.pending
+            doc.error_message = None
+            doc.chunk_count = 0
+            doc.indexed_at = None
+            to_dispatch.append(doc)
+
+        if ready_count_delta:
+            await self._db.execute(
+                update(KnowledgeBase)
+                .where(KnowledgeBase.id == kb_id)
+                .values(document_count=KnowledgeBase.document_count - ready_count_delta)
+            )
+
+        await self._db.commit()
+
+        from document_pipeline.tasks import process_document_task, ingest_from_s3_task
+        for doc in to_dispatch:
+            if doc.source_type == KbSourceTypeEnum.s3_url:
+                result = ingest_from_s3_task.delay(str(doc.id), doc.source_url or "", {})
+            else:
+                result = process_document_task.delay(str(doc.id))
+            doc.celery_task_id = result.id
+        await self._db.commit()
+
+        return len(to_dispatch)
 
     async def get_presigned_url(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> dict:
         doc = await self._get_doc(kb_id, doc_id, user_id)

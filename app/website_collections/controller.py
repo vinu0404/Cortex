@@ -215,3 +215,32 @@ async def retry_url(
         return ok(WebsiteUrlResponse.model_validate(wu).model_dump(mode="json"))
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/website-collections/{collection_id}/urls/{url_id}/cancel", response_model=None)
+async def cancel_url_processing(
+    collection_id: UUID,
+    url_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = WebsiteCollectionManager(db)
+        await mgr.cancel_url(collection_id, url_id, current_user.id)
+        return ok({"cancelled": True})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/website-collections/{collection_id}/reindex", response_model=None)
+async def reindex_collection(
+    collection_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = WebsiteCollectionManager(db)
+        count = await mgr.reindex_collection(collection_id, current_user.id)
+        return ok({"queued": count})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)

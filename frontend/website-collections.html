@@ -15,6 +15,7 @@
     .status-crawling, .status-processing { background:#3b82f6; animation:pulse-dot 1s ease-in-out infinite; }
     .status-ready { background:#22c55e; }
     .status-failed { background:#ef4444; }
+    .status-cancelled { background:#9ca3af; }
     @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:.4;} }
     .url-row { border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; background:var(--bg); }
   </style>
@@ -217,16 +218,21 @@
       statusInfo = `<span style="font-size:12px; color:var(--text-muted);">Crawling…</span>`;
     } else if (wu.crawl_status === 'processing') {
       statusInfo = `<span style="font-size:12px; color:var(--text-muted);">Processing ${wu.page_count || '…'} pages…</span>`;
+    } else if (wu.crawl_status === 'cancelled') {
+      statusInfo = `<span style="font-size:12px; color:var(--text-muted);">Cancelled</span>`;
     }
 
     let actions = '';
     if (login) {
       actions = `<button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">Remove</button>`;
     } else if (isActive) {
-      actions = `<button disabled class="btn btn-secondary btn-sm" style="opacity:.4;">Scraping…</button>
+      actions = `<button onclick="cancelUrl('${wu.id}')" class="btn btn-secondary btn-sm">Cancel</button>
                  <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
     } else if (wu.crawl_status === 'failed') {
       actions = `<button onclick="retryUrl('${wu.id}')" class="btn btn-secondary btn-sm">Retry</button>
+                 <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
+    } else if (wu.crawl_status === 'cancelled') {
+      actions = `<button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Scrape</button>
                  <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
     } else {
       actions = `<button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Scrape</button>
@@ -236,6 +242,7 @@
     return `
       <div class="url-row" id="url-row-${wu.id}">
         <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+          <input type="checkbox" class="url-checkbox" value="${wu.id}" onchange="updateBulkBarWc()" style="margin-top:3px; flex-shrink:0;">
           <div style="min-width:0; flex:1;">
             <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
               <span class="status-dot ${statusClass}"></span>
@@ -256,6 +263,8 @@
       return;
     }
 
+    const hasReindexable = urls.some(u => u.crawl_status === 'failed' || u.crawl_status === 'cancelled');
+
     const urlsHtml = urls.length
       ? urls.map(wu => renderUrlRow(wu)).join('')
       : '<div style="color:var(--text-muted); font-size:13px; padding:16px 0;">No URLs yet — add one below.</div>';
@@ -265,8 +274,13 @@
         <h2 style="font-size:16px; font-weight:600;">${esc(wc.name)}</h2>
         <div style="display:flex; gap:8px;">
           <button onclick="scrapeAll()" class="btn btn-secondary btn-sm">Scrape All</button>
+          <button onclick="reindexCollection('${wc.id}')" class="btn btn-secondary btn-sm" ${hasReindexable ? '' : 'disabled title="No failed or cancelled URLs to reindex"'}>Reindex all</button>
           <button onclick="showModal('modal-add-url')" class="btn btn-primary btn-sm">+ Add URL</button>
         </div>
+      </div>
+      <div id="bulk-bar-wc" style="display:none; gap:8px; padding:6px 0 10px; align-items:center;">
+        <span id="bulk-count-wc" style="font-size:13px; color:var(--text-muted);"></span>
+        <button onclick="bulkDeleteUrls('${wc.id}')" class="btn btn-danger btn-sm">Delete selected</button>
       </div>
       <div id="url-list" style="display:flex; flex-direction:column; gap:10px;">${urlsHtml}</div>`;
   }
@@ -331,6 +345,48 @@
       await apiDelete(`website-collections/${activeWcId}/urls/${urlId}`);
       await loadCollections();
       await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function cancelUrl(urlId) {
+    if (!activeWcId) return;
+    try {
+      await apiPost(`website-collections/${activeWcId}/urls/${urlId}/cancel`, {});
+      toast('Crawl cancelled');
+      await loadUrls(activeWcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function updateBulkBarWc() {
+    const selected = [...document.querySelectorAll('.url-checkbox:checked')];
+    const bar = document.getElementById('bulk-bar-wc');
+    if (!bar) return;
+    if (selected.length) {
+      bar.style.display = 'flex';
+      document.getElementById('bulk-count-wc').textContent = `${selected.length} selected`;
+    } else {
+      bar.style.display = 'none';
+    }
+  }
+
+  async function bulkDeleteUrls(wcId) {
+    const ids = [...document.querySelectorAll('.url-checkbox:checked')].map(c => c.value);
+    if (!ids.length) return;
+    if (!confirm(`Remove ${ids.length} URL(s) and their scraped data?`)) return;
+    try {
+      await Promise.all(ids.map(id => apiDelete(`website-collections/${wcId}/urls/${id}`)));
+      toast(`${ids.length} URL(s) deleted`);
+      await loadCollections();
+      await loadUrls(wcId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function reindexCollection(wcId) {
+    if (!confirm('Reindex all URLs? Only failed, cancelled, and ready URLs will be re-crawled. In-progress URLs are unchanged.')) return;
+    try {
+      const data = await apiPost(`website-collections/${wcId}/reindex`, {});
+      toast(data.queued ? `${data.queued} URL(s) queued for reindex` : 'No URLs to reindex');
+      await loadUrls(wcId);
     } catch (err) { toast(err.message, 'error'); }
   }
 

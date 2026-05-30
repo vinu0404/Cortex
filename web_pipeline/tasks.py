@@ -50,6 +50,9 @@ class _WcTaskBase(celery_app.Task):
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         url_id = args[0] if args else kwargs.get("url_id")
+        if isinstance(exc, ValueError) and "not found" in str(exc).lower():
+            logger.info("crawl_website_task: record deleted before task ran, url_id=%s", url_id)
+            return
         logger.error("crawl_website_task permanently failed: url_id=%s err=%s", url_id, exc)
         if url_id:
             asyncio.run(_set_url_failed(url_id, str(exc)))
@@ -99,6 +102,9 @@ async def _run_crawl_pipeline(url_id: str) -> None:
             wu = await db.scalar(select(WebsiteUrl).where(WebsiteUrl.id == UUID(url_id)))
             if wu is None:
                 raise ValueError(f"WebsiteUrl {url_id} not found — not retrying")
+            if wu.crawl_status == WcCrawlStatusEnum.cancelled:
+                logger.info("crawl_website_task skipped — url %s was cancelled", url_id)
+                return
 
             collection_id = str(wu.collection_id)
             user_id = str(wu.user_id)
@@ -256,6 +262,9 @@ async def _set_url_failed(url_id: str, error_message: str) -> None:
         async with get_custom_db_context_session() as db:
             wu = await db.scalar(select(WebsiteUrl).where(WebsiteUrl.id == UUID(url_id)))
             if wu:
+                # Don't overwrite cancelled status with failed
+                if wu.crawl_status == WcCrawlStatusEnum.cancelled:
+                    return
                 wu.crawl_status = WcCrawlStatusEnum.failed
                 wu.error_message = error_message[:2000]
                 await db.commit()

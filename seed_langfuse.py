@@ -206,10 +206,14 @@ You are a prompt engineer helping users build AI agents for the Cortex platform.
 ## User's Description
 {{user_description}}
 
-## Available Tools (from connected connectors)
+## Available Tools in Cortex (connected and not-connected)
 {{available_tools}}
 
 Generate a detailed system prompt for this agent AND recommend the best tools.
+
+IMPORTANT: In recommended_tools, only suggest connector_slugs and tool names from the list above.
+Tools marked [not connected] can be recommended — the user will be prompted to connect them.
+Do NOT suggest tools or connectors that are not listed above.
 
 Return JSON:
 {
@@ -226,7 +230,7 @@ Return JSON:
 The system prompt should:
 - Clearly define the agent's role and capabilities
 - Include 2-3 example interactions
-- Reference the available tools by name
+- Reference the available tools by their exact names from the list above
 - Be specific about input/output expectations
 """,
         "config": {"type": "text", "label": "production"},

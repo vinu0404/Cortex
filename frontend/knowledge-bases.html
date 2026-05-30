@@ -15,6 +15,7 @@
     .status-uploading, .status-processing { background:#3b82f6; }
     .status-ready { background:#22c55e; }
     .status-failed { background:#ef4444; }
+    .status-cancelled { background:#9ca3af; }
     .drop-zone { border:2px dashed var(--border); border-radius:var(--radius); padding:32px; text-align:center; cursor:pointer; transition:border-color .15s; }
     .drop-zone.drag-over { border-color:var(--primary); background:var(--surface); }
   </style>
@@ -201,6 +202,8 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
+  const _CANCELLABLE = new Set(['pending_upload','pending','uploading','processing']);
+
   function renderDocPanel(kb) {
     const panel = document.getElementById('doc-panel');
     if (!kb) {
@@ -208,8 +211,13 @@
       return;
     }
 
+    const hasReindexable = docs.some(d => d.processing_status === 'failed' || d.processing_status === 'cancelled');
+
     const docsHtml = docs.length ? docs.map(d => `
       <tr style="border-top:1px solid var(--border);">
+        <td style="padding:10px 8px; width:32px;">
+          <input type="checkbox" class="doc-checkbox" value="${d.id}" onchange="updateBulkBar()">
+        </td>
         <td style="padding:10px 8px; font-size:13px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(d.filename)}</td>
         <td style="padding:10px 8px;">
           <span class="status-dot status-${d.processing_status}"></span>
@@ -221,10 +229,11 @@
           <div style="display:flex; gap:6px;">
             ${d.processing_status === 'ready' ? `<button onclick="viewDoc('${kb.id}','${d.id}')" class="btn btn-secondary btn-sm">View</button>` : ''}
             ${d.processing_status === 'failed' ? `<button onclick="retryDoc('${kb.id}','${d.id}')" class="btn btn-secondary btn-sm">Retry</button>` : ''}
+            ${_CANCELLABLE.has(d.processing_status) ? `<button onclick="cancelDoc('${kb.id}','${d.id}')" class="btn btn-secondary btn-sm">Cancel</button>` : ''}
             <button onclick="deleteDoc('${kb.id}','${d.id}')" class="btn btn-danger btn-sm">×</button>
           </div>
         </td>
-      </tr>`).join('') : `<tr><td colspan="5" style="padding:24px 8px; text-align:center; color:var(--text-muted); font-size:13px;">No documents yet — upload some below.</td></tr>`;
+      </tr>`).join('') : `<tr><td colspan="6" style="padding:24px 8px; text-align:center; color:var(--text-muted); font-size:13px;">No documents yet — upload some below.</td></tr>`;
 
     panel.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
@@ -232,6 +241,7 @@
         <div style="display:flex; gap:8px;">
           <button onclick="document.getElementById('file-input').click()" class="btn btn-primary btn-sm">Upload Files</button>
           <button onclick="showModal('modal-s3')" class="btn btn-secondary btn-sm">From S3 URL</button>
+          <button onclick="reindexKb('${kb.id}')" class="btn btn-secondary btn-sm" ${hasReindexable ? '' : 'disabled title="No failed or cancelled documents to reindex"'}>Reindex all</button>
         </div>
       </div>
 
@@ -244,10 +254,16 @@
         <p style="color:var(--text-muted); font-size:13px;">Drop files here or click to browse<br><span style="font-size:11px;">PDF, DOCX, XLSX, CSV, TXT, MD, images — up to 100 MB each</span></p>
       </div>
 
-      <div style="margin-top:24px;">
+      <div id="bulk-bar" style="display:none; gap:8px; padding:10px 0; align-items:center; margin-top:16px;">
+        <span id="bulk-count" style="font-size:13px; color:var(--text-muted);"></span>
+        <button onclick="bulkDeleteDocs('${kb.id}')" class="btn btn-danger btn-sm">Delete selected</button>
+      </div>
+
+      <div style="margin-top:12px;">
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="text-align:left;">
+              <th style="padding:8px; width:32px;"><input type="checkbox" id="select-all-docs" onchange="toggleSelectAll(this)"></th>
               <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Filename</th>
               <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Status</th>
               <th style="padding:8px; font-size:12px; color:var(--text-muted); font-weight:500;">Chunks</th>
@@ -349,6 +365,54 @@
     if (!confirm('Delete this document?')) return;
     try {
       await apiDelete(`knowledge-bases/${kbId}/documents/${docId}`);
+      await loadDocs(kbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function cancelDoc(kbId, docId) {
+    try {
+      await apiPost(`knowledge-bases/${kbId}/documents/${docId}/cancel`, {});
+      toast('Processing cancelled');
+      await loadDocs(kbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function updateBulkBar() {
+    const selected = [...document.querySelectorAll('.doc-checkbox:checked')];
+    const bar = document.getElementById('bulk-bar');
+    const selectAll = document.getElementById('select-all-docs');
+    if (!bar) return;
+    if (selected.length) {
+      bar.style.display = 'flex';
+      document.getElementById('bulk-count').textContent = `${selected.length} selected`;
+    } else {
+      bar.style.display = 'none';
+    }
+    const total = document.querySelectorAll('.doc-checkbox').length;
+    if (selectAll) selectAll.checked = selected.length === total && total > 0;
+  }
+
+  function toggleSelectAll(cb) {
+    document.querySelectorAll('.doc-checkbox').forEach(c => { c.checked = cb.checked; });
+    updateBulkBar();
+  }
+
+  async function bulkDeleteDocs(kbId) {
+    const ids = [...document.querySelectorAll('.doc-checkbox:checked')].map(c => c.value);
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} document(s)?`)) return;
+    try {
+      await Promise.all(ids.map(id => apiDelete(`knowledge-bases/${kbId}/documents/${id}`)));
+      toast(`${ids.length} document(s) deleted`);
+      await loadDocs(kbId);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function reindexKb(kbId) {
+    if (!confirm('Reindex all documents? Only failed, cancelled, and ready documents will be re-processed. In-progress documents are unchanged.')) return;
+    try {
+      const data = await apiPost(`knowledge-bases/${kbId}/reindex`, {});
+      toast(data.queued ? `${data.queued} document(s) queued for reindex` : 'No documents to reindex');
       await loadDocs(kbId);
     } catch (err) { toast(err.message, 'error'); }
   }

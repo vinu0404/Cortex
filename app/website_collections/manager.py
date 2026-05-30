@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 _ACTIVE_STATUSES = (WcCrawlStatusEnum.crawling, WcCrawlStatusEnum.processing)
 
+_CANCELLABLE_STATUSES = {
+    WcCrawlStatusEnum.pending,
+    WcCrawlStatusEnum.crawling,
+    WcCrawlStatusEnum.processing,
+}
+
+_REINDEXABLE_STATUSES = {
+    WcCrawlStatusEnum.ready,
+    WcCrawlStatusEnum.failed,
+    WcCrawlStatusEnum.cancelled,
+}
+
 
 class WebsiteCollectionManager:
     def __init__(self, db: AsyncSession):
@@ -87,6 +99,7 @@ class WebsiteCollectionManager:
     async def delete_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> None:
         wu = await self._get_url(collection_id, url_id, user_id)
 
+        task_id = wu.celery_task_id
         await self._db.delete(wu)
         await self._db.execute(
             update(WebsiteCollection)
@@ -94,6 +107,13 @@ class WebsiteCollectionManager:
             .values(url_count=WebsiteCollection.url_count - 1)
         )
         await self._db.commit()
+
+        if task_id:
+            try:
+                from celery_app import celery_app
+                celery_app.control.revoke(task_id, terminate=True)
+            except Exception:
+                logger.warning("Could not revoke task %s for url %s — task may still run", task_id, url_id)
 
         from web_pipeline import vector_store as wc_vs
         await wc_vs.delete_url_chunks(str(collection_id), str(url_id))
@@ -108,7 +128,9 @@ class WebsiteCollectionManager:
         await self._db.commit()
 
         from web_pipeline.tasks import crawl_website_task
-        crawl_website_task.delay(str(url_id))
+        result = crawl_website_task.delay(str(url_id))
+        wu.celery_task_id = result.id
+        await self._db.commit()
         return wu
 
     async def trigger_scrape_all(self, collection_id: UUID, user_id: UUID) -> list[WebsiteUrl]:
@@ -123,7 +145,9 @@ class WebsiteCollectionManager:
             await self._db.commit()
             from web_pipeline.tasks import crawl_website_task
             for wu in triggered:
-                crawl_website_task.delay(str(wu.id))
+                result = crawl_website_task.delay(str(wu.id))
+                wu.celery_task_id = result.id
+            await self._db.commit()
         return urls
 
     async def retry_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
@@ -139,8 +163,53 @@ class WebsiteCollectionManager:
         await self._db.commit()
 
         from web_pipeline.tasks import crawl_website_task
-        crawl_website_task.delay(str(url_id))
+        result = crawl_website_task.delay(str(url_id))
+        wu.celery_task_id = result.id
+        await self._db.commit()
         return wu
+
+    async def cancel_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
+        wu = await self._get_url(collection_id, url_id, user_id)
+        if wu.crawl_status not in _CANCELLABLE_STATUSES:
+            raise ConflictError("URL cannot be cancelled in its current state")
+
+        task_id = wu.celery_task_id
+        wu.crawl_status = WcCrawlStatusEnum.cancelled
+        wu.celery_task_id = None
+        await self._db.commit()
+
+        if task_id:
+            from celery_app import celery_app
+            celery_app.control.revoke(task_id, terminate=True)
+
+        return wu
+
+    async def reindex_collection(self, collection_id: UUID, user_id: UUID) -> int:
+        """Re-scrape all ready/failed/cancelled URLs. Crawl task deletes old chunks automatically."""
+        urls = await self.list_urls(collection_id, user_id)
+
+        to_dispatch: list[WebsiteUrl] = []
+        for wu in urls:
+            if wu.crawl_status not in _REINDEXABLE_STATUSES:
+                continue
+            wu.crawl_status = WcCrawlStatusEnum.pending
+            wu.error_message = None
+            wu.page_count = 0
+            wu.chunk_count = 0
+            to_dispatch.append(wu)
+
+        if not to_dispatch:
+            return 0
+
+        await self._db.commit()
+
+        from web_pipeline.tasks import crawl_website_task
+        for wu in to_dispatch:
+            result = crawl_website_task.delay(str(wu.id))
+            wu.celery_task_id = result.id
+        await self._db.commit()
+
+        return len(to_dispatch)
 
     # ------------------------------------------------------------------
     # Agent ↔ collection junction

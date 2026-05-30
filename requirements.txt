@@ -53,6 +53,12 @@ scrapy==2.12.0
 # PDF generation
 reportlab==4.2.5
 
+# Document parsing (KB pipeline)
+pdfplumber==0.11.4
+python-docx==1.1.2
+pandas==2.2.3
+openpyxl==3.1.5
+
 # OAuth
 requests-oauthlib==2.0.0
 google-auth==2.37.0

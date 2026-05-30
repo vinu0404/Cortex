@@ -3,7 +3,7 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.knowledge_bases.models import (
     KbDocumentResponse,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
+    PresignUploadRequest,
     RetryResponse,
     S3IngestRequest,
 )
@@ -69,22 +70,33 @@ async def delete_kb(
         return fail(e.code, e.message, e.status_code)
 
 
-@router.post("/knowledge-bases/{kb_id}/documents", response_model=None)
-async def upload_documents(
+
+@router.post("/knowledge-bases/{kb_id}/documents/presign", response_model=None)
+async def presign_document_upload(
     kb_id: UUID,
-    files: list[UploadFile] = File(...),
+    body: PresignUploadRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        file_tuples = []
-        for f in files:
-            content = await f.read()
-            file_tuples.append((f.filename or "file", content, f.content_type or "application/octet-stream"))
+        result = await KnowledgeBaseManager(db).presign_upload(
+            kb_id, current_user.id, body.filename, body.content_type, body.file_size_bytes
+        )
+        return ok(result)
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
 
-        mgr = KnowledgeBaseManager(db)
-        results = await mgr.upload_documents(kb_id, current_user.id, file_tuples)
-        return ok(results)
+
+@router.post("/knowledge-bases/{kb_id}/documents/{doc_id}/confirm", response_model=None)
+async def confirm_document_upload(
+    kb_id: UUID,
+    doc_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        doc = await KnowledgeBaseManager(db).confirm_upload(kb_id, doc_id, current_user.id)
+        return ok({"doc_id": str(doc.id), "filename": doc.filename, "status": doc.processing_status})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -137,6 +149,35 @@ async def delete_document(
         mgr = KnowledgeBaseManager(db)
         await mgr.delete_document(kb_id, doc_id, current_user.id)
         return ok({"deleted": True})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/knowledge-bases/{kb_id}/documents/{doc_id}/cancel", response_model=None)
+async def cancel_document_processing(
+    kb_id: UUID,
+    doc_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = KnowledgeBaseManager(db)
+        await mgr.cancel_document(kb_id, doc_id, current_user.id)
+        return ok({"cancelled": True})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.post("/knowledge-bases/{kb_id}/reindex", response_model=None)
+async def reindex_kb(
+    kb_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = KnowledgeBaseManager(db)
+        count = await mgr.reindex_kb(kb_id, current_user.id)
+        return ok({"queued": count})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -201,11 +242,25 @@ async def kb_status_stream(token: str) -> StreamingResponse:
         await pubsub.subscribe(channel)
         try:
             yield "data: connected\n\n"
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    # decode_responses=True means data is already str — no .decode()
+            while True:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=4.0
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    yield ": keepalive\n\n"
+                    await asyncio.sleep(1)
+                    try:
+                        await pubsub.subscribe(channel)
+                    except Exception:
+                        pass
+                    continue
+                if message and message["type"] == "message":
                     yield f"data: {message['data']}\n\n"
-                await asyncio.sleep(0)
+                else:
+                    yield ": keepalive\n\n"
         except asyncio.CancelledError:
             pass
         finally:

@@ -108,7 +108,7 @@ async def delete_document_chunks(kb_id: str, doc_id: str) -> None:
         )
     except Exception as e:
         if getattr(e, "status_code", None) == 404:
-            logger..error("No Qdrant collection found for kb %s when deleting chunks for doc %s", kb_id, doc_id)
+            logger.warning("Qdrant collection not found when deleting chunks for doc %s (kb %s) — skipping", doc_id, kb_id)
         else:
             logger.error("Failed to delete chunks for doc %s from kb %s", doc_id, kb_id, exc_info=True)
     finally:

@@ -445,10 +445,23 @@
       <div style="display:flex; align-items:center; justify-content:space-between; padding:8px; border:1px solid var(--border); border-radius:var(--radius); font-size:13px;">
         <div>
           <div style="font-weight:500;">${esc(k.key_name)}</div>
-          <div style="color:var(--text-muted); font-size:11px;">${esc(k.provider || 'unknown')} · ${k.available_models?.length || 0} models</div>
+          <div style="color:var(--text-muted); font-size:11px;">${esc(k.provider || 'unknown')} · ${k.available_models?.length || 0} compatible models</div>
         </div>
-        <button onclick="deleteKey('${k.id}')" class="btn btn-danger btn-sm">×</button>
+        <div style="display:flex; gap:6px;">
+          <button onclick="refreshKeyModels('${k.id}', this)" class="btn btn-secondary btn-sm" title="Re-scan compatible models">↻</button>
+          <button onclick="deleteKey('${k.id}')" class="btn btn-danger btn-sm">×</button>
+        </div>
       </div>`).join('') : '<div style="color:var(--text-muted); font-size:13px;">No API keys added.</div>';
+  }
+
+  async function refreshKeyModels(id, btn) {
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const res = await apiPost(`api-keys/${id}/refresh`, {});
+      toast(`Refreshed: ${res.count} compatible models found`);
+      await init();
+    } catch (err) { toast(err.message, 'error'); }
+    finally { btn.disabled = false; btn.textContent = '↻'; }
   }
 
   async function deleteKey(id) {

@@ -21,6 +21,9 @@ class _DocTaskBase(celery_app.Task):
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         doc_id = args[0] if args else kwargs.get("doc_id")
+        if isinstance(exc, ValueError) and "not found" in str(exc).lower():
+            logger.info("process_document_task: record deleted before task ran, doc_id=%s", doc_id)
+            return
         logger.error("Document processing permanently failed: doc_id=%s err=%s", doc_id, exc)
         if doc_id:
             asyncio.run(_set_doc_failed(doc_id, str(exc)))
@@ -86,6 +89,9 @@ async def _run_device_pipeline(doc_id: str) -> None:
             doc = result.scalar_one_or_none()
             if doc is None:
                 raise ValueError(f"Document {doc_id} not found in DB — not retrying")
+            if doc.processing_status == KbProcessingStatusEnum.cancelled:
+                logger.info("process_document_task skipped — document %s was cancelled", doc_id)
+                return
 
             kb_id = str(doc.kb_id)
             user_id = str(doc.user_id)
@@ -142,6 +148,9 @@ async def _run_s3_pipeline(doc_id: str, s3_url: str, creds: dict) -> None:
             doc = result.scalar_one_or_none()
             if doc is None:
                 raise ValueError(f"Document {doc_id} not found in DB — not retrying")
+            if doc.processing_status == KbProcessingStatusEnum.cancelled:
+                logger.info("ingest_from_s3_task skipped — document %s was cancelled", doc_id)
+                return
 
             kb_id = str(doc.kb_id)
             user_id = str(doc.user_id)
@@ -271,6 +280,10 @@ async def _set_doc_failed(doc_id: str, error_message: str) -> None:
             result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
             doc = result.scalar_one_or_none()
             if doc:
+                # Don't overwrite cancelled status with failed
+                if doc.processing_status == KbProcessingStatusEnum.cancelled:
+                    return
+
                 if doc.staging_path and os.path.exists(doc.staging_path):
                     try:
                         staging_dir = os.path.dirname(doc.staging_path)

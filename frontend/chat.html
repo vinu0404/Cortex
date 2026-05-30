@@ -14,7 +14,23 @@
     .sidebar { width:240px; flex-shrink:0; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
     .conv-item { padding:10px 14px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .conv-item:hover, .conv-item.active { background:var(--surface); }
-    .plan-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:8px 16px; font-size:12px; color:var(--text-muted); font-family:monospace; }
+    .plan-bar { background:var(--surface); border-bottom:1px solid var(--border); padding:6px 16px; min-height:36px; overflow-x:auto; }
+    .plan-flow { display:flex; align-items:center; flex-wrap:nowrap; gap:4px; white-space:nowrap; }
+    .plan-node { display:inline-flex; align-items:center; gap:3px; padding:3px 9px; border-radius:12px; font-size:11px; font-weight:500; transition:all 0.2s; }
+    .plan-node-system { background:#6366f1; color:#fff; }
+    .plan-node-agent { background:var(--bg); border:1.5px solid var(--border); color:var(--text-muted); }
+    .plan-node-agent.pn-active { border-color:var(--accent); color:var(--accent); background:rgba(99,102,241,0.07); }
+    .plan-node-agent.pn-done { opacity:0.4; }
+    .plan-node-agent.pn-hitl { border-color:#f59e0b; color:#d97706; background:rgba(245,158,11,0.07); }
+    .plan-node-agent.pn-error { border-color:#ef4444; color:#ef4444; }
+    .plan-node-system.pn-active { background:#818cf8; }
+    .plan-node-system.pn-done { opacity:0.5; }
+    .plan-stage { display:flex; flex-direction:column; gap:3px; }
+    .plan-stage-parallel { border:1px dashed var(--border); border-radius:6px; padding:3px 5px; }
+    .plan-arrow { color:var(--text-muted); font-size:13px; padding:0 1px; flex-shrink:0; }
+    .plan-tools { font-size:9px; opacity:0.65; font-family:monospace; }
+    .plan-spinner { display:inline-block; width:7px; height:7px; border:1.5px solid currentColor; border-top-color:transparent; border-radius:50%; animation:spin 0.7s linear infinite; flex-shrink:0; }
+    @keyframes spin { to { transform:rotate(360deg); } }
     .hitl-popup { position:fixed; bottom:80px; right:24px; width:360px; background:var(--bg); border:2px solid var(--accent); border-radius:var(--radius); padding:20px; box-shadow:0 4px 20px rgba(0,0,0,0.15); z-index:500; }
     .artifact-mermaid { padding:12px; background:var(--surface); border-radius:var(--radius); margin-top:8px; overflow-x:auto; }
     .artifact-code { padding:12px; background:#111; color:#eee; border-radius:var(--radius); margin-top:8px; font-family:monospace; font-size:12px; overflow-x:auto; white-space:pre-wrap; }
@@ -42,7 +58,9 @@
   <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
 
     <!-- Plan bar -->
-    <div id="plan-bar" class="plan-bar hidden"></div>
+    <div id="plan-bar" class="plan-bar hidden">
+      <div id="plan-flow" class="plan-flow"></div>
+    </div>
     <!-- Compacting banner -->
     <div id="compacting-bar" class="hidden" style="background:#fffbea; border-bottom:1px solid #e5d900; padding:4px 16px; font-size:12px; color:#7a6a00;">
       ✦ Summarising earlier conversation…
@@ -85,8 +103,10 @@
   let wsId = params.get('workspace_id');
   let convId = params.get('conversation_id') || null;
   let pendingHitlId = null;
+  let pendingHitlAgentId = null;
   let hitlTimer = null;
   let personas = [];
+  let planStages = [];
   let prevCursor = null;
   let hasMoreMessages = false;
   let loadingMore = false;
@@ -124,6 +144,7 @@
     (data?.items || []).forEach(conv => {
       const div = document.createElement('div');
       div.className = `conv-item${conv.id === convId ? ' active' : ''}`;
+      div.dataset.convId = conv.id;
       div.textContent = conv.title || 'New conversation';
       div.onclick = () => {
         convId = conv.id;
@@ -167,7 +188,7 @@
     convId = null;
     prevCursor = null; hasMoreMessages = false; loadingMore = false;
     document.getElementById('messages').innerHTML = '';
-    document.getElementById('plan-bar').classList.add('hidden');
+    document.getElementById('plan-bar').classList.add('hidden'); document.getElementById('plan-flow').innerHTML = ''; planStages = [];
     history.replaceState({}, '', `?workspace_id=${wsId}`);
     document.querySelectorAll('.conv-item').forEach(e => e.classList.remove('active'));
   }
@@ -191,7 +212,7 @@
 
     document.getElementById('query-input').value = '';
     document.getElementById('send-btn').disabled = true;
-    document.getElementById('plan-bar').classList.add('hidden');
+    document.getElementById('plan-bar').classList.add('hidden'); document.getElementById('plan-flow').innerHTML = ''; planStages = [];
     document.getElementById('compacting-bar').classList.add('hidden');
 
     appendMessage('user', query);
@@ -209,8 +230,11 @@
         persona_id,
       })) {
         if (event === 'plan') {
-          document.getElementById('plan-bar').textContent = '→ ' + data.execution_order;
-          document.getElementById('plan-bar').classList.remove('hidden');
+          planStages = data.stages || [];
+          renderPlanBar(planStages);
+        } else if (event === 'agent_progress') {
+          if (data.type === 'agent_start') updatePlanNode(data.agent_id, 'active');
+          else if (data.type === 'agent_done') updatePlanNode(data.agent_id, data.success ? 'done' : 'error');
         } else if (event === 'token') {
           fullText += data.text;
           contentEl.textContent = fullText;
@@ -220,16 +244,24 @@
         } else if (event === 'suggestions') {
           renderSuggestions(data.questions);
         } else if (event === 'status') {
-          document.getElementById('plan-bar').textContent = `⚙ ${data.agent_name} (${data.phase})`;
+          updateSystemNode(data.agent_name, 'active');
         } else if (event === 'hitl_required') {
           showHitl(data);
+          pendingHitlAgentId = data.agent_id || null;
+          updatePlanNode(data.agent_id, 'hitl');
         } else if (event === 'hitl_approved') {
           clearHitl(); toast('HITL approved — continuing…');
+          updatePlanNode(pendingHitlAgentId, 'active'); pendingHitlAgentId = null;
         } else if (event === 'hitl_denied') {
           clearHitl(); toast('HITL denied', 'error');
+          updatePlanNode(pendingHitlAgentId, 'error'); pendingHitlAgentId = null;
         } else if (event === 'compacting') {
           document.getElementById('compacting-bar').classList.remove('hidden');
+        } else if (event === 'conversation_title') {
+          const item = document.querySelector(`[data-conv-id="${data.conversation_id}"]`);
+          if (item) item.textContent = data.title;
         } else if (event === 'done') {
+          updateSystemNode('Composer', 'done');
           convId = data.conversation_id;
           if (data.message_id) assistantEl.dataset.messageId = data.message_id;
           history.replaceState({}, '', `?workspace_id=${wsId}&conversation_id=${convId}`);
@@ -409,6 +441,86 @@
     document.getElementById('messages').parentElement.insertBefore(
       bar, document.getElementById('messages').nextSibling
     );
+  }
+
+  // ---- Plan bar rendering ----
+  function renderPlanBar(stages) {
+    const flow = document.getElementById('plan-flow');
+    flow.innerHTML = '';
+
+    const masterNode = makePlanNode('Master', 'system', 'pn-master');
+    flow.appendChild(masterNode);
+
+    stages.forEach(stage => {
+      flow.appendChild(makePlanArrow());
+      const stageEl = document.createElement('div');
+      stageEl.className = 'plan-stage' + (stage.length > 1 ? ' plan-stage-parallel' : '');
+      stage.forEach(agent => {
+        const toolsStr = agent.tools && agent.tools.length ? `[${agent.tools.slice(0,3).join(',')}]` : '';
+        stageEl.appendChild(makePlanNode(agent.agent_name, 'agent', null, agent.agent_id, toolsStr));
+      });
+      flow.appendChild(stageEl);
+    });
+
+    flow.appendChild(makePlanArrow());
+    flow.appendChild(makePlanNode('Composer', 'system', 'pn-composer'));
+    document.getElementById('plan-bar').classList.remove('hidden');
+  }
+
+  function makePlanNode(name, type, extraClass, agentId, tools) {
+    const el = document.createElement('div');
+    el.className = `plan-node plan-node-${type}`;
+    if (extraClass) el.dataset.systemNode = extraClass.replace('pn-', '');
+    if (agentId) el.dataset.agentId = agentId;
+    const nameEl = document.createElement('span');
+    nameEl.textContent = name;
+    el.appendChild(nameEl);
+    if (tools) {
+      const t = document.createElement('span');
+      t.className = 'plan-tools';
+      t.textContent = ' ' + tools;
+      el.appendChild(t);
+    }
+    return el;
+  }
+
+  function makePlanArrow() {
+    const el = document.createElement('span');
+    el.className = 'plan-arrow';
+    el.textContent = '→';
+    return el;
+  }
+
+  function updatePlanNode(agentId, state) {
+    if (!agentId) return;
+    const node = document.querySelector(`[data-agent-id="${agentId}"]`);
+    if (!node) return;
+    node.classList.remove('pn-active', 'pn-done', 'pn-hitl', 'pn-error');
+    const spinner = node.querySelector('.plan-spinner');
+    if (spinner) spinner.remove();
+    if (!state) return;
+    node.classList.add(`pn-${state}`);
+    if (state === 'active') {
+      const s = document.createElement('span');
+      s.className = 'plan-spinner';
+      node.insertBefore(s, node.firstChild);
+    }
+  }
+
+  function updateSystemNode(name, state) {
+    const key = name.toLowerCase();
+    const node = document.querySelector(`[data-system-node="${key}"]`);
+    if (!node) return;
+    node.classList.remove('pn-active', 'pn-done');
+    const spinner = node.querySelector('.plan-spinner');
+    if (spinner) spinner.remove();
+    if (!state) return;
+    node.classList.add(`pn-${state}`);
+    if (state === 'active') {
+      const s = document.createElement('span');
+      s.className = 'plan-spinner';
+      node.insertBefore(s, node.firstChild);
+    }
   }
 
   // HITL
