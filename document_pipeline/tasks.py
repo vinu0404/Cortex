@@ -220,7 +220,7 @@ async def _ingest_from_storage(db, doc, kb_id: str, doc_id: str, filename: str,
     texts = [c.text for c in chunks]
     embeddings = await embed_texts(texts, openai_api_key)
 
-    await vector_store.ensure_collection(kb_id)
+    await vector_store.ensure_collection(kb_id, redis_client)
     await vector_store.create_text_index(kb_id)
     await vector_store.upsert_chunks(kb_id, doc_id, filename, chunks, embeddings)
 

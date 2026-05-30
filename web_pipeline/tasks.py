@@ -228,7 +228,7 @@ async def _run_crawl_pipeline(url_id: str) -> None:
         embeddings = await embed_texts([c.text for c in all_chunks], api_key)
 
         # 9. Upsert to Qdrant
-        await wc_vs.ensure_collection(collection_id)
+        await wc_vs.ensure_collection(collection_id, redis_client)
         await wc_vs.upsert_chunks(collection_id, url_id, all_chunks, embeddings, all_payloads)
 
         # 10. status = ready

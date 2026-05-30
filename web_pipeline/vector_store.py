@@ -26,20 +26,27 @@ def _collection_name(collection_id: str) -> str:
     return f"wc_{collection_id}"
 
 
-async def ensure_collection(collection_id: str) -> None:
-    client = _client()
-    try:
-        collections = await client.get_collections()
-        existing = {c.name for c in collections.collections}
-        name = _collection_name(collection_id)
-        if name not in existing:
-            await client.create_collection(
-                collection_name=name,
-                vectors_config=VectorParams(size=settings.KB_EMBEDDING_DIMS, distance=Distance.COSINE),
-            )
-            logger.info("Created Qdrant WC collection: %s", name)
-    finally:
-        await client.close()
+async def ensure_collection(collection_id: str, redis_client=None) -> None:
+    name = _collection_name(collection_id)
+
+    async def _create_if_missing() -> None:
+        client = _client()
+        try:
+            collections = await client.get_collections()
+            if name not in {c.name for c in collections.collections}:
+                await client.create_collection(
+                    collection_name=name,
+                    vectors_config=VectorParams(size=settings.KB_EMBEDDING_DIMS, distance=Distance.COSINE),
+                )
+                logger.info("Created Qdrant WC collection: %s", name)
+        finally:
+            await client.close()
+
+    if redis_client is not None:
+        async with redis_client.lock(f"qdrant:collection_init:{name}", timeout=15, blocking_timeout=30):
+            await _create_if_missing()
+    else:
+        await _create_if_missing()
 
 
 async def upsert_chunks(
