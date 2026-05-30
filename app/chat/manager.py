@@ -167,8 +167,16 @@ class ChatManager:
             select(UserLongTermMemory).where(UserLongTermMemory.user_id == user_id)
         )
         if record:
-            record.critical_facts = {**record.critical_facts, **critical_facts}
-            record.preferences = {**record.preferences, **preferences}
+            merged_facts = dict(record.critical_facts)
+            for k, v in critical_facts.items():
+                if v not in (None, "", [], {}):
+                    merged_facts[k] = v
+            merged_prefs = dict(record.preferences)
+            for k, v in preferences.items():
+                if v not in (None, "", [], {}):
+                    merged_prefs[k] = v
+            record.critical_facts = merged_facts
+            record.preferences = merged_prefs
             record.updated_at = datetime.now(timezone.utc)
         else:
             self._db.add(UserLongTermMemory(

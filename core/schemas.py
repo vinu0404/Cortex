@@ -87,8 +87,8 @@ class ResolvedAgentTask(BaseModel):
 
 class LongTermMemoryExtraction(BaseModel):
     should_store: bool
-    critical_facts: dict[str, Any] = Field(default_factory=dict)
-    preferences: dict[str, Any] = Field(default_factory=dict)
+    fields_to_update: dict[str, Any] = Field(default_factory=dict)
+    preferences_to_update: dict[str, Any] = Field(default_factory=dict)
 
 
 class TitleGenerationOutput(BaseModel):

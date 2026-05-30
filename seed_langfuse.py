@@ -153,30 +153,38 @@ Return a JSON object:
     {
         "name": "long_term_memory_extraction",
         "prompt": """\
-Analyse this conversation exchange and extract any facts about the user worth remembering for future conversations.
+You help maintain a persistent memory profile for a user across conversations.
 
-## User Query
-{{query}}
+## What Is Already Known About This User
+{{existing_ltm}}
 
-## Assistant Response
-{{response}}
+## This Conversation Exchange
+User: {{query}}
+Assistant: {{response}}
 
-Extract only PERSISTENT facts (role, company, projects, preferences, name).
-Ignore transient facts (current task, today's question).
+## Instructions
+- Compare the exchange to what is already known
+- Only extract fields that contain NEW information or CORRECTIONS to existing values
+- If the user did not mention a field this turn — do NOT include it in fields_to_update
+- Never return null values — omit a field entirely if it has no update
+- Valid fields for critical_facts: name, company, role, location, projects (list of strings)
+- Valid fields for preferences: tone, detail_level, language
 
-Return JSON or null if nothing worth storing:
+## Examples
+If existing_ltm = {"name": "Vinay"} and user says "actually my full name is Vinay Kumar":
+→ fields_to_update = {"name": "Vinay Kumar"}
+
+If existing_ltm = {"name": "Vinay"} and user asks about the weather:
+→ should_store = false, fields_to_update = {}
+
+Return JSON:
 {
   "should_store": true,
-  "critical_facts": {
-    "name": "string or null",
-    "company": "string or null",
-    "role": "string or null",
-    "projects": ["list or empty"]
+  "fields_to_update": {
+    "name": "only include if user revealed or corrected their name this turn"
   },
-  "preferences": {
-    "tone": "string or null",
-    "detail_level": "string or null",
-    "language": "string or null"
+  "preferences_to_update": {
+    "tone": "only include if user expressed a preference this turn"
   }
 }
 """,

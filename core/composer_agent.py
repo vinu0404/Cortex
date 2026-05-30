@@ -1,3 +1,4 @@
+import json
 import logging
 
 import litellm
@@ -54,10 +55,15 @@ async def _call_composer_llm(
     model_id: str,
     api_key: str,
     conversation_id: str,
+    system_prompt: str | None = None,
 ) -> tuple[ComposerOutput, TokenUsage]:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt_text})
     response = await litellm.acompletion(
         model=model_id,
-        messages=[{"role": "user", "content": prompt_text}],
+        messages=messages,
         response_format={"type": "json_object"},
         api_key=api_key,
         metadata={
@@ -99,7 +105,18 @@ async def compose_response(
         "persona": persona or "Default — be helpful and concise.",
     })
 
-    result, tokens = await _call_composer_llm(prompt_text, model_id, api_key, conversation_id)
+    ltm_system: str | None = None
+    if long_term_memory.critical_facts:
+        facts = {k: v for k, v in long_term_memory.critical_facts.items() if v not in (None, "", [], {})}
+        if facts:
+            ltm_system = (
+                "## User Context\n"
+                "You know these facts about the user. Use them when answering questions about the user — "
+                "do NOT say you don't know if the answer is present here.\n"
+                + json.dumps(facts)
+            )
+
+    result, tokens = await _call_composer_llm(prompt_text, model_id, api_key, conversation_id, system_prompt=ltm_system)
 
     artifacts = []
     for artifact in result.artifacts:

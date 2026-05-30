@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from uuid import UUID
 
@@ -72,10 +73,11 @@ def schedule_long_term_memory(
     model_id: str,
     api_key: str,
     db_updater,
+    existing_ltm: dict,
 ) -> None:
     """Fire-and-forget: evaluate + persist long-term memory after each response."""
     task = asyncio.create_task(
-        _evaluate_long_term(query, response, user_id, model_id, api_key, db_updater)
+        _evaluate_long_term(query, response, user_id, model_id, api_key, db_updater, existing_ltm)
     )
     task.add_done_callback(_log_task_error)
 
@@ -92,10 +94,12 @@ async def _evaluate_long_term(
     model_id: str,
     api_key: str,
     db_updater,
+    existing_ltm: dict,
 ) -> None:
     prompt_text = get_compiled_prompt("long_term_memory_extraction", {
         "query": query,
         "response": response[:600],
+        "existing_ltm": json.dumps(existing_ltm) if existing_ltm else "{}",
     })
     try:
         resp = await litellm.acompletion(
@@ -107,6 +111,6 @@ async def _evaluate_long_term(
         )
         extraction = LongTermMemoryExtraction.model_validate_json(resp.choices[0].message.content)
         if extraction.should_store:
-            await db_updater(user_id, extraction.critical_facts, extraction.preferences)
+            await db_updater(user_id, extraction.fields_to_update, extraction.preferences_to_update)
     except Exception:
         logger.exception("Long-term memory extraction failed")

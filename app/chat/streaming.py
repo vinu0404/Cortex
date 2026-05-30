@@ -341,7 +341,10 @@ async def chat_stream(
         async with get_custom_db_context_session() as bg_db:
             await ChatManager(bg_db).upsert_long_term_memory(uid, facts, prefs)
 
-    schedule_long_term_memory(query, response_text, user_id, master_model, master_key, _update_ltm)
+    schedule_long_term_memory(
+        query, response_text, user_id, master_model, master_key, _update_ltm,
+        existing_ltm=long_term_memory.critical_facts,
+    )
 
     yield sse_event({"total_ms": elapsed_ms, "conversation_id": str(conversation_id), "message_id": str(message_id)}, "done")
 
