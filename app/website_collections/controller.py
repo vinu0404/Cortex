@@ -20,6 +20,7 @@ from app.website_collections.models import (
 )
 from config.settings import get_settings
 from database.session import get_db, get_custom_db_context_session
+from web_pipeline.vector_store import list_url_chunks
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -154,6 +155,22 @@ async def list_urls(
         mgr = WebsiteCollectionManager(db)
         urls = await mgr.list_urls(collection_id, current_user.id)
         return ok([WebsiteUrlResponse.model_validate(u).model_dump(mode="json") for u in urls])
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.get("/website-collections/{collection_id}/urls/{url_id}/chunks", response_model=None)
+async def get_url_chunks(
+    collection_id: UUID,
+    url_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        mgr = WebsiteCollectionManager(db)
+        await mgr.get_url(collection_id, url_id, current_user.id)
+        chunks = await list_url_chunks(str(collection_id), str(url_id))
+        return ok({"chunks": chunks, "count": len(chunks)})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 

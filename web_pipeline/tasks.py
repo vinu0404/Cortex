@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-import multiprocessing
+import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
@@ -11,34 +12,6 @@ from config.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Subprocess runner — module-level for multiprocessing picklability
-# ---------------------------------------------------------------------------
-
-def _crawl_in_subprocess(url: str, max_depth: int, output_path: str, max_pages: int, cfg: dict) -> None:
-    from scrapy.crawler import CrawlerProcess
-    from web_pipeline.spider import CortexSpider
-
-    process = CrawlerProcess({
-        "ROBOTSTXT_OBEY": cfg["obey_robots"],
-        "USER_AGENT": cfg["user_agent"],
-        "CONCURRENT_REQUESTS": cfg["concurrent_requests"],
-        "DOWNLOAD_TIMEOUT": cfg["download_timeout"],
-        "DEPTH_LIMIT": max_depth,
-        "LOG_ENABLED": False,
-        "TELNETCONSOLE_ENABLED": False,
-        "COOKIES_ENABLED": False,
-    })
-    process.crawl(
-        CortexSpider,
-        start_url=url,
-        max_depth=max_depth,
-        output_path=output_path,
-        max_pages=max_pages,
-    )
-    process.start()
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +49,7 @@ def crawl_website_task(self, url_id: str) -> None:
         raise
     except Exception as exc:
         logger.error("crawl_website_task retry: url_id=%s err=%s", url_id, exc)
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc, countdown=10)
 
 
 # ---------------------------------------------------------------------------
@@ -137,29 +110,32 @@ async def _run_crawl_pipeline(url_id: str) -> None:
             "download_timeout": settings.WC_DOWNLOAD_TIMEOUT,
         }
 
-        p = multiprocessing.Process(
-            target=_crawl_in_subprocess,
-            args=(url, max_depth, output_path, settings.WC_MAX_PAGES_PER_URL, cfg),
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "web_pipeline.runner",
+            url, str(max_depth), output_path, str(settings.WC_MAX_PAGES_PER_URL), json.dumps(cfg),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        p.start()
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: p.join(settings.WC_CRAWL_TIMEOUT_SECONDS))
-
-        if p.is_alive():
-            p.terminate()
-            p.join(5)
+        try:
+            _, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=settings.WC_CRAWL_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
             raise RuntimeError(f"Spider timed out after {settings.WC_CRAWL_TIMEOUT_SECONDS}s")
 
-        if p.exitcode != 0:
-            raise RuntimeError(f"Spider exited with code {p.exitcode}")
+        stderr_output = (stderr_bytes or b"").decode(errors="replace").strip()
+
+        if proc.returncode != 0:
+            detail = f": {stderr_output[:500]}" if stderr_output else ""
+            raise RuntimeError(f"Spider exited with code {proc.returncode}{detail}")
 
         # 5. Read JSONL output
         try:
             with open(output_path, "r", encoding="utf-8") as f:
                 items = [json.loads(line) for line in f if line.strip()]
         finally:
-            import os
             try:
                 os.unlink(output_path)
             except Exception:
@@ -183,7 +159,8 @@ async def _run_crawl_pipeline(url_id: str) -> None:
             )
 
         if not pages:
-            raise RuntimeError("Spider produced no pages — site may be empty, blocked, or unreachable")
+            detail = f" — spider log: {stderr_output[:300]}" if stderr_output else ""
+            raise RuntimeError(f"Spider produced no pages — site may be empty, blocked, or unreachable{detail}")
 
         # 6. status = processing
         async with get_custom_db_context_session() as db:

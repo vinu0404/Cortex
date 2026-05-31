@@ -1,5 +1,8 @@
 import json
+import logging
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spiders import CrawlSpider, Rule
@@ -36,17 +39,26 @@ class CortexSpider(CrawlSpider):
     name = "cortex_spider"
     rules = (Rule(LinkExtractor(deny_extensions=[]), callback="parse_page", follow=True),)
 
-    def __init__(self, start_url, max_depth, output_path, max_pages, **kwargs):
+    def __init__(self, start_url: str, max_depth: int, output_path: str, max_pages: int, **kwargs):
         self.start_urls = [start_url]
         self.allowed_domains = [urlparse(start_url).netloc]
         self.max_depth = int(max_depth)
         self.max_pages = int(max_pages)
         self._page_count = 0
-        self._login_blocked = 0
+        self._seen_urls: set[str] = set()
         self._out = open(output_path, "w", encoding="utf-8")
         super().__init__(**kwargs)
 
+    def parse_start_url(self, response, **kwargs):
+        self.parse_page(response)
+        return []
+
     def parse_page(self, response, **kwargs):
+        normalized = response.url.rstrip("/")
+        if normalized in self._seen_urls:
+            return
+        self._seen_urls.add(normalized)
+
         depth = response.meta.get("depth", 0)
 
         if _is_login_wall(response):
@@ -68,6 +80,7 @@ class CortexSpider(CrawlSpider):
             text = " ".join(response.css("body *::text").getall())
             text = " ".join(text.split())
         except Exception:
+            logger.warning("Text extraction failed for %s", response.url, exc_info=True)
             return
 
         if len(text) < 50:

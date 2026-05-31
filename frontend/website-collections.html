@@ -104,6 +104,16 @@
   </div>
 </div>
 
+<div id="modal-chunks" class="modal-overlay" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="width:680px; max-width:95vw; max-height:80vh; display:flex; flex-direction:column;">
+    <div class="modal-header" style="flex-shrink:0;">
+      <h3 id="chunks-modal-title" style="margin:0; font-size:16px; font-weight:600;">Chunks</h3>
+      <button onclick="document.getElementById('modal-chunks').style.display='none'" class="btn btn-secondary btn-sm">✕</button>
+    </div>
+    <div id="chunks-modal-body" style="overflow-y:auto; flex:1; padding:16px;"></div>
+  </div>
+</div>
+
 <script src="/static/js/app.js"></script>
 <script>
   requireAuth();
@@ -231,11 +241,14 @@
     } else if (wu.crawl_status === 'failed') {
       actions = `<button onclick="retryUrl('${wu.id}')" class="btn btn-secondary btn-sm">Retry</button>
                  <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
-    } else if (wu.crawl_status === 'cancelled') {
+    } else if (wu.crawl_status === 'cancelled' || wu.crawl_status === 'pending') {
       actions = `<button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Scrape</button>
                  <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
     } else {
-      actions = `<button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Scrape</button>
+      // ready — previously scraped successfully
+      const chunksDisabled = wu.chunk_count === 0 ? 'disabled' : '';
+      actions = `<button onclick="viewChunks('${wu.id}', \`${esc(wu.url)}\`)" class="btn btn-secondary btn-sm" ${chunksDisabled} title="${wu.chunk_count} chunk${wu.chunk_count===1?'':'s'}">See Chunks</button>
+                 <button onclick="scrapeUrl('${wu.id}')" class="btn btn-secondary btn-sm">Re-Scrape</button>
                  <button onclick="deleteUrl('${wu.id}')" class="btn btn-danger btn-sm">×</button>`;
     }
 
@@ -355,6 +368,43 @@
       toast('Crawl cancelled');
       await loadUrls(activeWcId);
     } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function viewChunks(urlId, urlLabel) {
+    const modal = document.getElementById('modal-chunks');
+    const title = document.getElementById('chunks-modal-title');
+    const body = document.getElementById('chunks-modal-body');
+    title.textContent = `Chunks — ${urlLabel}`;
+    body.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">Loading…</p>';
+    modal.style.display = 'flex';
+
+    try {
+      const data = await apiGet(`website-collections/${activeWcId}/urls/${urlId}/chunks`);
+      const chunks = data.chunks || [];
+      if (chunks.length === 0) {
+        body.innerHTML = '<p style="color:var(--text-muted); font-size:13px;">No chunks found.</p>';
+        return;
+      }
+      let currentPage = '';
+      let html = '';
+      for (const c of chunks) {
+        const p = c.payload;
+        const pageUrl = p.url || '';
+        const text = p.text || '';
+        const idx = p.chunk_index ?? '?';
+        if (pageUrl !== currentPage) {
+          currentPage = pageUrl;
+          html += `<div style="margin:12px 0 4px; font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; border-top:1px solid var(--border); padding-top:8px;">${esc(pageUrl)}</div>`;
+        }
+        html += `<div style="margin-bottom:8px; padding:8px 10px; background:var(--bg-secondary); border-radius:6px; border:1px solid var(--border);">
+          <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Chunk #${idx}</div>
+          <div style="font-size:12px; line-height:1.5; color:var(--text-primary); white-space:pre-wrap; max-height:120px; overflow-y:auto;">${esc(text.slice(0, 400))}${text.length > 400 ? '…' : ''}</div>
+        </div>`;
+      }
+      body.innerHTML = html;
+    } catch (e) {
+      body.innerHTML = `<p style="color:#ef4444; font-size:13px;">Failed to load chunks: ${esc(String(e))}</p>`;
+    }
   }
 
   function updateBulkBarWc() {

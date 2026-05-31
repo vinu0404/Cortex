@@ -107,6 +107,29 @@ async def delete_collection(collection_id: str) -> None:
         await client.close()
 
 
+async def list_url_chunks(collection_id: str, url_id: str, limit: int = 500) -> list[dict]:
+    client = _client()
+    try:
+        results, _ = await client.scroll(
+            collection_name=_collection_name(collection_id),
+            scroll_filter=Filter(
+                must=[FieldCondition(key="url_id", match=MatchValue(value=url_id))]
+            ),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return sorted(
+            [{"id": str(r.id), "payload": r.payload} for r in results],
+            key=lambda x: (x["payload"].get("url", ""), x["payload"].get("chunk_index", 0)),
+        )
+    except Exception:
+        logger.error("WC list_url_chunks failed for url %s in collection %s", url_id, collection_id, exc_info=True)
+        return []
+    finally:
+        await client.close()
+
+
 async def dense_search(collection_id: str, query_embedding: list[float], top_k: int) -> list[dict]:
     client = _client()
     try:

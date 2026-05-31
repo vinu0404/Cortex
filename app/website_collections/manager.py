@@ -97,7 +97,7 @@ class WebsiteCollectionManager:
         return wu
 
     async def delete_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> None:
-        wu = await self._get_url(collection_id, url_id, user_id)
+        wu = await self.get_url(collection_id, url_id, user_id)
 
         task_id = wu.celery_task_id
         await self._db.delete(wu)
@@ -119,7 +119,7 @@ class WebsiteCollectionManager:
         await wc_vs.delete_url_chunks(str(collection_id), str(url_id))
 
     async def trigger_scrape(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
-        wu = await self._get_url(collection_id, url_id, user_id)
+        wu = await self.get_url(collection_id, url_id, user_id)
         if wu.crawl_status in _ACTIVE_STATUSES:
             raise ConflictError("URL is already being crawled")
 
@@ -151,7 +151,7 @@ class WebsiteCollectionManager:
         return urls
 
     async def retry_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
-        wu = await self._get_url(collection_id, url_id, user_id)
+        wu = await self.get_url(collection_id, url_id, user_id)
         if wu.crawl_status != WcCrawlStatusEnum.failed:
             raise ConflictError("Only failed URLs can be retried")
         # login_required errors should not be retried — UI enforces Remove, but guard here too
@@ -169,7 +169,7 @@ class WebsiteCollectionManager:
         return wu
 
     async def cancel_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
-        wu = await self._get_url(collection_id, url_id, user_id)
+        wu = await self.get_url(collection_id, url_id, user_id)
         if wu.crawl_status not in _CANCELLABLE_STATUSES:
             raise ConflictError("URL cannot be cancelled in its current state")
 
@@ -254,7 +254,7 @@ class WebsiteCollectionManager:
             raise ForbiddenError("Access denied")
         return wc
 
-    async def _get_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
+    async def get_url(self, collection_id: UUID, url_id: UUID, user_id: UUID) -> WebsiteUrl:
         wu = await self._db.get(WebsiteUrl, url_id)
         if not wu or wu.collection_id != collection_id:
             raise NotFoundError("WebsiteUrl", str(url_id))

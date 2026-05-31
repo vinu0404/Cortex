@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     WC_MAX_PAGES_PER_URL:       int = 500
     WC_CONCURRENT_REQUESTS:     int = 8
     WC_DOWNLOAD_TIMEOUT:        int = 30
-    WC_OBEY_ROBOTS:             bool = True
+    WC_OBEY_ROBOTS:             bool = False
     WC_USER_AGENT:              str = "CortexBot/1.0"
     WC_TOP_K_DENSE:             int = 50
     WC_TOP_K_FINAL:             int = 5
