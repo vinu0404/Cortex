@@ -129,6 +129,9 @@ app.include_router(website_collections_router, tags=["website-collections"])
 from app.embed.controller import router as embed_router
 app.include_router(embed_router, tags=["embed"])
 
+from app.vinu.controller import router as vinu_router
+app.include_router(vinu_router, prefix="/vinu", tags=["vinu"])
+
 
 # ---- Health & Frontend ----
 @app.get("/health")

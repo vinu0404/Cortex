@@ -32,6 +32,8 @@ class User(Base):
         nullable=False,
     )
 
+    vinu_agent_name: Mapped[str | None] = mapped_column(String, nullable=True)
+
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )

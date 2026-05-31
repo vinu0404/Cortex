@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
@@ -53,7 +54,11 @@ class KnowledgeBaseManager:
     async def create_kb(self, user_id: UUID, name: str, description: str | None) -> KnowledgeBase:
         kb = KnowledgeBase(user_id=user_id, name=name, description=description)
         self._db.add(kb)
-        await self._db.flush()
+        try:
+            await self._db.flush()
+        except IntegrityError as e:
+            await self._db.rollback()
+            raise ConflictError(f'A knowledge base named "{name}" already exists.') from e
         return kb
 
     async def delete_kb(self, kb_id: UUID, user_id: UUID) -> None:

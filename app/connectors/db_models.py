@@ -13,6 +13,7 @@ class AuthTypeEnum(str, enum.Enum):
     oauth2 = "oauth2"
     apikey = "apikey"
     credentials = "credentials"
+    internal = "internal"
 
 
 class ConnectorStatusEnum(str, enum.Enum):
