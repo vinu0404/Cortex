@@ -177,13 +177,19 @@
     finally { btn.disabled = false; btn.textContent = 'Create'; }
   }
 
-  async function deleteCollection(id) {
-    if (!confirm('Delete this collection and all its scraped data?')) return;
-    try {
-      await apiDelete(`website-collections/${id}`);
-      if (activeWcId === id) { activeWcId = null; renderUrlPanel(null); }
-      await loadCollections();
-    } catch (err) { toast(err.message, 'error'); }
+  function deleteCollection(id) {
+    confirmDialog({
+      title: 'Delete collection?',
+      message: 'All scraped pages and data in this collection will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try {
+          await apiDelete(`website-collections/${id}`);
+          if (activeWcId === id) { activeWcId = null; renderUrlPanel(null); }
+          await loadCollections();
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   // ---- URL panel ----
@@ -351,14 +357,20 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
-  async function deleteUrl(urlId) {
+  function deleteUrl(urlId) {
     if (!activeWcId) return;
-    if (!confirm('Remove this URL and its scraped data?')) return;
-    try {
-      await apiDelete(`website-collections/${activeWcId}/urls/${urlId}`);
-      await loadCollections();
-      await loadUrls(activeWcId);
-    } catch (err) { toast(err.message, 'error'); }
+    confirmDialog({
+      title: 'Remove URL?',
+      message: 'This URL and all its scraped data will be removed.',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        try {
+          await apiDelete(`website-collections/${activeWcId}/urls/${urlId}`);
+          await loadCollections();
+          await loadUrls(activeWcId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   async function cancelUrl(urlId) {
@@ -419,25 +431,38 @@
     }
   }
 
-  async function bulkDeleteUrls(wcId) {
+  function bulkDeleteUrls(wcId) {
     const ids = [...document.querySelectorAll('.url-checkbox:checked')].map(c => c.value);
     if (!ids.length) return;
-    if (!confirm(`Remove ${ids.length} URL(s) and their scraped data?`)) return;
-    try {
-      await Promise.all(ids.map(id => apiDelete(`website-collections/${wcId}/urls/${id}`)));
-      toast(`${ids.length} URL(s) deleted`);
-      await loadCollections();
-      await loadUrls(wcId);
-    } catch (err) { toast(err.message, 'error'); }
+    confirmDialog({
+      title: `Remove ${ids.length} URL(s)?`,
+      message: 'These URLs and all their scraped data will be removed.',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        try {
+          await Promise.all(ids.map(id => apiDelete(`website-collections/${wcId}/urls/${id}`)));
+          toast(`${ids.length} URL(s) deleted`);
+          await loadCollections();
+          await loadUrls(wcId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
-  async function reindexCollection(wcId) {
-    if (!confirm('Reindex all URLs? Only failed, cancelled, and ready URLs will be re-crawled. In-progress URLs are unchanged.')) return;
-    try {
-      const data = await apiPost(`website-collections/${wcId}/reindex`, {});
-      toast(data.queued ? `${data.queued} URL(s) queued for reindex` : 'No URLs to reindex');
-      await loadUrls(wcId);
-    } catch (err) { toast(err.message, 'error'); }
+  function reindexCollection(wcId) {
+    confirmDialog({
+      title: 'Reindex all URLs?',
+      message: 'Only failed, cancelled, and ready URLs will be re-crawled. In-progress URLs are unchanged.',
+      confirmText: 'Reindex',
+      confirmClass: 'btn-primary',
+      onConfirm: async () => {
+        try {
+          const data = await apiPost(`website-collections/${wcId}/reindex`, {});
+          toast(data.queued ? `${data.queued} URL(s) queued for reindex` : 'No URLs to reindex');
+          await loadUrls(wcId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   // ---- SSE ----

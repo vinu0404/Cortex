@@ -534,10 +534,16 @@
     finally { btn.disabled = false; btn.textContent = 'Save Agent'; }
   }
 
-  async function deleteAgent(id) {
-    if (!confirm('Delete this agent?')) return;
-    try { await apiDelete(`agents/${id}`); await loadAgents(); }
-    catch (err) { toast(err.message, 'error'); }
+  function deleteAgent(id) {
+    confirmDialog({
+      title: 'Delete agent?',
+      message: 'This agent and all its configuration will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try { await apiDelete(`agents/${id}`); await loadAgents(); }
+        catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   function closeAgentModal() {
@@ -595,9 +601,15 @@
     finally { btn.disabled = false; btn.textContent = '↻'; }
   }
 
-  async function deleteKey(id) {
-    if (!confirm('Remove this API key?')) return;
-    try { await apiDelete(`api-keys/${id}`); await init(); } catch (err) { toast(err.message, 'error'); }
+  function deleteKey(id) {
+    confirmDialog({
+      title: 'Remove API key?',
+      message: 'This key will be disconnected from the workspace.',
+      confirmText: 'Remove',
+      onConfirm: async () => {
+        try { await apiDelete(`api-keys/${id}`); await init(); } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   function renderConnectors(defs, instances) {
@@ -659,13 +671,19 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
-  async function disconnectConnector(instanceId) {
-    if (!confirm('Disconnect this connector?')) return;
-    try {
-      await apiDelete(`connectors/instances/${instanceId}`);
-      toast('Disconnected');
-      await reloadConnectors();
-    } catch (err) { toast(err.message, 'error'); }
+  function disconnectConnector(instanceId) {
+    confirmDialog({
+      title: 'Disconnect connector?',
+      message: 'The connector will be unlinked. You can reconnect it later.',
+      confirmText: 'Disconnect',
+      onConfirm: async () => {
+        try {
+          await apiDelete(`connectors/instances/${instanceId}`);
+          toast('Disconnected');
+          await reloadConnectors();
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   let _credSlug = null;

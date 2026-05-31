@@ -9,6 +9,8 @@ let vinuAgentName = null;
 let vinuNextCursor = null;
 let vinuHasNext = false;
 let vinuStreaming = false;
+let vinuSidebarWidth = 420;
+let _vinuResizing = false;
 
 function _vesc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -28,9 +30,17 @@ function _vRelTime(iso) {
 // Open / close
 // ---------------------------------------------------------------------------
 
+function _vinuApplyWidth(w) {
+  vinuSidebarWidth = Math.max(280, Math.min(w, Math.floor(window.innerWidth * 0.85)));
+  const sidebar = document.getElementById('vinu-sidebar');
+  sidebar.style.width = vinuSidebarWidth + 'px';
+  if (!vinuOpen) sidebar.style.right = `-${vinuSidebarWidth + 20}px`;
+}
+
 async function toggleVinu() {
   vinuOpen = !vinuOpen;
-  document.getElementById('vinu-sidebar').style.right = vinuOpen ? '0' : '-440px';
+  const sidebar = document.getElementById('vinu-sidebar');
+  sidebar.style.right = vinuOpen ? '0' : `-${vinuSidebarWidth + 20}px`;
   if (vinuOpen && vinuView === 'list') {
     await _vinuLoadSettings();
   }
@@ -138,16 +148,22 @@ function _vinuAppendConvRow(conv) {
   list.appendChild(row);
 }
 
-async function deleteVinuConv(id, btn) {
-  if (!confirm('Delete this chat?')) return;
-  btn.disabled = true;
-  try {
-    await apiDelete(`vinu/conversations/${id}`);
-    await _vinuLoadConversations(true);
-  } catch (e) {
-    toast(e.message, 'error');
-    btn.disabled = false;
-  }
+function deleteVinuConv(id, btn) {
+  confirmDialog({
+    title: 'Delete chat?',
+    message: 'This conversation and all its messages will be permanently deleted.',
+    confirmText: 'Delete',
+    onConfirm: async () => {
+      btn.disabled = true;
+      try {
+        await apiDelete(`vinu/conversations/${id}`);
+        await _vinuLoadConversations(true);
+      } catch (e) {
+        toast(e.message, 'error');
+        btn.disabled = false;
+      }
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -618,3 +634,39 @@ function vinuKeydown(e) {
     sendVinuMessage();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sidebar resize
+// ---------------------------------------------------------------------------
+
+(function () {
+  const handle = document.getElementById('vinu-resize-handle');
+  if (!handle) return;
+  let startX = 0, startW = 0;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    _vinuResizing = true;
+    startX = e.clientX;
+    startW = vinuSidebarWidth;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    // Disable transition while dragging
+    document.getElementById('vinu-sidebar').style.transition = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!_vinuResizing) return;
+    _vinuApplyWidth(startW + (startX - e.clientX));
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!_vinuResizing) return;
+    _vinuResizing = false;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    document.getElementById('vinu-sidebar').style.transition = 'right .25s ease';
+  });
+})();

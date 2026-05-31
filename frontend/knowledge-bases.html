@@ -177,13 +177,19 @@
     finally { btn.disabled = false; btn.textContent = 'Create'; }
   }
 
-  async function deleteKb(id) {
-    if (!confirm('Delete this knowledge base and all its documents?')) return;
-    try {
-      await apiDelete(`knowledge-bases/${id}`);
-      if (activeKbId === id) { activeKbId = null; renderDocPanel(null); }
-      await loadKbs();
-    } catch (err) { toast(err.message, 'error'); }
+  function deleteKb(id) {
+    confirmDialog({
+      title: 'Delete knowledge base?',
+      message: 'All documents and index data in this knowledge base will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try {
+          await apiDelete(`knowledge-bases/${id}`);
+          if (activeKbId === id) { activeKbId = null; renderDocPanel(null); }
+          await loadKbs();
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   // --- Document panel ---
@@ -378,12 +384,18 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
-  async function deleteDoc(kbId, docId) {
-    if (!confirm('Delete this document?')) return;
-    try {
-      await apiDelete(`knowledge-bases/${kbId}/documents/${docId}`);
-      await loadDocs(kbId);
-    } catch (err) { toast(err.message, 'error'); }
+  function deleteDoc(kbId, docId) {
+    confirmDialog({
+      title: 'Delete document?',
+      message: 'This document and its index data will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try {
+          await apiDelete(`knowledge-bases/${kbId}/documents/${docId}`);
+          await loadDocs(kbId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   async function cancelDoc(kbId, docId) {
@@ -414,24 +426,37 @@
     updateBulkBar();
   }
 
-  async function bulkDeleteDocs(kbId) {
+  function bulkDeleteDocs(kbId) {
     const ids = [...document.querySelectorAll('.doc-checkbox:checked')].map(c => c.value);
     if (!ids.length) return;
-    if (!confirm(`Delete ${ids.length} document(s)?`)) return;
-    try {
-      await Promise.all(ids.map(id => apiDelete(`knowledge-bases/${kbId}/documents/${id}`)));
-      toast(`${ids.length} document(s) deleted`);
-      await loadDocs(kbId);
-    } catch (err) { toast(err.message, 'error'); }
+    confirmDialog({
+      title: `Delete ${ids.length} document(s)?`,
+      message: 'These documents and their index data will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try {
+          await Promise.all(ids.map(id => apiDelete(`knowledge-bases/${kbId}/documents/${id}`)));
+          toast(`${ids.length} document(s) deleted`);
+          await loadDocs(kbId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
-  async function reindexKb(kbId) {
-    if (!confirm('Reindex all documents? Only failed, cancelled, and ready documents will be re-processed. In-progress documents are unchanged.')) return;
-    try {
-      const data = await apiPost(`knowledge-bases/${kbId}/reindex`, {});
-      toast(data.queued ? `${data.queued} document(s) queued for reindex` : 'No documents to reindex');
-      await loadDocs(kbId);
-    } catch (err) { toast(err.message, 'error'); }
+  function reindexKb(kbId) {
+    confirmDialog({
+      title: 'Reindex all documents?',
+      message: 'Only failed, cancelled, and ready documents will be re-processed. In-progress documents are unchanged.',
+      confirmText: 'Reindex',
+      confirmClass: 'btn-primary',
+      onConfirm: async () => {
+        try {
+          const data = await apiPost(`knowledge-bases/${kbId}/reindex`, {});
+          toast(data.queued ? `${data.queued} document(s) queued for reindex` : 'No documents to reindex');
+          await loadDocs(kbId);
+        } catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   // --- SSE status updates ---

@@ -15,7 +15,7 @@
     .vinu-msg-avatar { width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:14px; }
     .vinu-msg.assistant .vinu-msg-avatar { background:var(--accent); color:#fff; }
     .vinu-msg.user .vinu-msg-avatar { background:var(--surface); color:var(--text); }
-    .vinu-msg-body { max-width:310px; padding:10px 14px; border-radius:12px; font-size:13px; line-height:1.55; }
+    .vinu-msg-body { max-width:75%; padding:10px 14px; border-radius:12px; font-size:13px; line-height:1.55; }
     .vinu-msg.assistant .vinu-msg-body { background:var(--surface); color:var(--text); border-bottom-left-radius:4px; }
     .vinu-msg.user .vinu-msg-body { background:var(--accent); color:#fff; border-bottom-right-radius:4px; white-space:pre-wrap; }
     .vinu-msg-body p { margin:0 0 4px; }
@@ -29,6 +29,9 @@
     .vinu-typing span:nth-child(2) { animation-delay:.2s; }
     .vinu-typing span:nth-child(3) { animation-delay:.4s; }
     @keyframes vinu-bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+    #vinu-resize-handle { position:absolute; top:0; left:0; width:6px; height:100%; cursor:col-resize; z-index:10; }
+    #vinu-resize-handle::after { content:''; position:absolute; top:0; left:2px; width:2px; height:100%; background:var(--accent); opacity:0; transition:opacity .15s; }
+    #vinu-resize-handle:hover::after, #vinu-resize-handle.dragging::after { opacity:.5; }
   </style>
 </head>
 <body>
@@ -38,11 +41,12 @@
   <span style="font-weight:700; font-size:16px; letter-spacing:-0.5px;">Cortex</span>
   <div style="display:flex; gap:12px; align-items:center;">
     <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
-    <a href="/knowledge-bases.html" class="btn btn-secondary btn-sm">Knowledge Bases</a>
-    <a href="/website-collections.html" class="btn btn-secondary btn-sm">Website Collections</a>
-    <a href="/dashboard.html" class="btn btn-secondary btn-sm">Dashboard</a>
-    <button onclick="toggleVinu()" id="vinu-toggle-btn" class="btn btn-secondary btn-sm">✨ Vinu</button>
-    <button onclick="handleLogout()" class="btn btn-secondary btn-sm">Sign Out</button>
+    <a href="/knowledge-bases.html" class="btn btn-nav btn-sm">📚 Knowledge Bases</a>
+    <a href="/website-collections.html" class="btn btn-nav btn-sm">🌐 Web Collections</a>
+    <a href="/dashboard.html" class="btn btn-nav btn-sm">◈ Dashboard</a>
+    <button onclick="toggleVinu()" id="vinu-toggle-btn" class="btn btn-nav btn-sm">✨ Vinu</button>
+    <div class="nav-divider"></div>
+    <button onclick="handleLogout()" class="btn btn-nav-signout btn-sm">Sign out</button>
   </div>
 </nav>
 
@@ -93,6 +97,8 @@
 
 <!-- Vinu Sidebar -->
 <div id="vinu-sidebar" style="position:fixed;top:0;right:-440px;width:420px;height:100vh;background:var(--bg);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:200;transition:right .25s ease;box-shadow:-4px 0 24px rgba(0,0,0,.15);">
+
+  <div id="vinu-resize-handle"></div>
 
   <!-- Header -->
   <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
@@ -212,24 +218,36 @@
     finally { btn.disabled = false; btn.textContent = 'Create'; }
   }
 
-  async function deleteWs(id, btn) {
-    if (!confirm('Delete this workspace?')) return;
-    btn.disabled = true;
-    try {
-      await apiDelete(`workspaces/${id}`);
-      await loadWorkspaces();
-    } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  function deleteWs(id, btn) {
+    confirmDialog({
+      title: 'Delete workspace?',
+      message: 'All agents, conversations and settings in this workspace will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        btn.disabled = true;
+        try {
+          await apiDelete(`workspaces/${id}`);
+          await loadWorkspaces();
+        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+      },
+    });
   }
 
   function goChat(id) { window.location.href = `/chat.html?workspace_id=${id}`; }
   function goWorkspace(id) { window.location.href = `/workspace.html?id=${id}`; }
 
-  async function handleLogout() {
-    const rt = getRefreshToken();
-    if (rt) {
-      try { await apiPost('auth/logout', { refresh_token: rt }); } catch {}
-    }
-    clearTokens(); redirectToAuth();
+  function handleLogout() {
+    confirmDialog({
+      title: 'Sign out?',
+      message: 'You will be returned to the login page.',
+      confirmText: 'Sign out',
+      confirmClass: 'btn-secondary',
+      onConfirm: async () => {
+        const rt = getRefreshToken();
+        if (rt) { try { await apiPost('auth/logout', { refresh_token: rt }); } catch {} }
+        clearTokens(); redirectToAuth();
+      },
+    });
   }
 
   async function loadUser() {

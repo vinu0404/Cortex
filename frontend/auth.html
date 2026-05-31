@@ -4,81 +4,266 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Sign In</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    /* Subtle animated grid */
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,0,0,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      animation: gridDrift 20s linear infinite;
+      z-index: 0;
+    }
+    @keyframes gridDrift {
+      from { background-position: 0 0, 0 0; }
+      to   { background-position: 48px 48px, 48px 48px; }
+    }
+
+    /* Corner accents */
+    .corner {
+      position: fixed;
+      width: 320px; height: 320px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0,0,0,.05) 0%, transparent 70%);
+      z-index: 0;
+    }
+    .corner-tl { top: -120px; left: -120px; }
+    .corner-br { bottom: -120px; right: -120px; }
+
+    /* Card */
+    .auth-card {
+      position: relative;
+      z-index: 10;
+      width: 380px;
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 16px;
+      padding: 40px 36px;
+      box-shadow: 0 2px 4px rgba(0,0,0,.04), 0 12px 40px rgba(0,0,0,.08);
+      animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both;
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Logo */
+    .auth-logo {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .auth-logo-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px; height: 44px;
+      background: #111;
+      border-radius: 12px;
+      font-size: 20px;
+      margin-bottom: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .auth-logo-mark::after {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%;
+      width: 60%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.18), transparent);
+      animation: logoShimmer 3s ease-in-out infinite;
+    }
+    @keyframes logoShimmer {
+      0%   { left: -100%; }
+      50%  { left: 150%; }
+      100% { left: 150%; }
+    }
+    .auth-logo h1 { font-size: 20px; font-weight: 700; letter-spacing: -.5px; color: #111; }
+    .auth-logo p  { font-size: 12px; color: #888; margin-top: 3px; }
+
+    /* Tabs */
+    .tab-bar {
+      display: flex;
+      background: #f5f5f5;
+      border: 1px solid #e8e8e8;
+      border-radius: 10px;
+      padding: 3px;
+      margin-bottom: 28px;
+      position: relative;
+    }
+    .tab-pill {
+      position: absolute;
+      top: 3px; bottom: 3px;
+      width: calc(50% - 3px);
+      background: #fff;
+      border-radius: 8px;
+      border: 1px solid #e5e5e5;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      transition: left .22s cubic-bezier(.4,0,.2,1);
+    }
+    .tab-pill.on-login    { left: 3px; }
+    .tab-pill.on-register { left: 50%; }
+    .tab-btn {
+      flex: 1;
+      position: relative;
+      z-index: 1;
+      padding: 7px;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: color .2s;
+      color: #999;
+    }
+    .tab-btn.active { color: #111; }
+
+    /* Fields */
+    .auth-form { display: flex; flex-direction: column; gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 12px; font-weight: 500; color: #666; }
+    .field input {
+      padding: 10px 13px;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      background: #fafafa;
+      color: #111;
+      font-size: 14px;
+      outline: none;
+      transition: border-color .18s, background .18s, box-shadow .18s, transform .12s;
+    }
+    .field input::placeholder { color: #bbb; }
+    .field input:focus {
+      border-color: #111;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(0,0,0,.06);
+    }
+    .field input:hover:not(:focus) { border-color: #ccc; }
+
+    /* Submit button */
+    .auth-btn {
+      position: relative;
+      width: 100%;
+      padding: 11px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      background: #111;
+      border: 1px solid #111;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 4px;
+      overflow: hidden;
+      transition: transform .15s, box-shadow .15s, background .15s;
+      letter-spacing: .01em;
+    }
+    .auth-btn::before {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%;
+      width: 50%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.1), transparent);
+      animation: btnShimmer 2.8s ease-in-out infinite;
+    }
+    @keyframes btnShimmer {
+      0%   { left: -100%; }
+      55%  { left: 150%; }
+      100% { left: 150%; }
+    }
+    .auth-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(0,0,0,.18);
+      background: #222;
+    }
+    .auth-btn:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: none;
+    }
+    .auth-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* Form slide-in */
+    @keyframes formIn {
+      from { opacity: 0; transform: translateX(8px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    .auth-form { animation: formIn .22s ease both; }
+    .hidden { display: none !important; }
+  </style>
 </head>
-<body style="background:#f5f5f5; min-height:100vh; display:flex; align-items:center; justify-content:center;">
+<body>
 
-<div style="width:360px;">
-  <div style="text-align:center; margin-bottom:32px;">
-    <h1 style="font-size:24px; font-weight:700; letter-spacing:-0.5px;">Cortex</h1>
-    <p style="color:var(--text-muted); margin-top:4px;">Multi-agent orchestration platform</p>
+<div class="bg-grid"></div>
+<div class="corner corner-tl"></div>
+<div class="corner corner-br"></div>
+
+<div class="auth-card">
+  <div class="auth-logo">
+    <div class="auth-logo-mark">⚡</div>
+    <h1>Cortex</h1>
+    <p>Multi-agent orchestration platform</p>
   </div>
 
-  <div class="card">
-    <!-- Tab toggle -->
-    <div style="display:flex; gap:0; margin-bottom:24px; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;">
-      <button id="tab-login" onclick="switchTab('login')"
-        style="flex:1; padding:8px; font-size:14px; font-weight:500; background:var(--accent); color:#fff; border:none; cursor:pointer;">
-        Sign In
-      </button>
-      <button id="tab-register" onclick="switchTab('register')"
-        style="flex:1; padding:8px; font-size:14px; font-weight:500; background:transparent; color:var(--text); border:none; cursor:pointer;">
-        Register
-      </button>
+  <div class="tab-bar">
+    <div class="tab-pill on-login" id="tab-pill"></div>
+    <button class="tab-btn active" id="tab-login" onclick="switchTab('login')">Sign In</button>
+    <button class="tab-btn" id="tab-register" onclick="switchTab('register')">Register</button>
+  </div>
+
+  <form id="form-login" class="auth-form" onsubmit="handleLogin(event)">
+    <div class="field">
+      <label>Email</label>
+      <input id="login-email" type="email" placeholder="you@example.com" required autocomplete="email">
     </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+    </div>
+    <button type="submit" id="login-btn" class="auth-btn">Sign In</button>
+  </form>
 
-    <!-- Login form -->
-    <form id="form-login" onsubmit="handleLogin(event)">
-      <div style="display:flex; flex-direction:column; gap:16px;">
-        <div class="form-group">
-          <label>Email</label>
-          <input id="login-email" type="email" class="input" placeholder="you@example.com" required>
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input id="login-password" type="password" class="input" placeholder="••••••••" required>
-        </div>
-        <button type="submit" id="login-btn" class="btn btn-primary" style="width:100%; justify-content:center;">
-          Sign In
-        </button>
-      </div>
-    </form>
-
-    <!-- Register form -->
-    <form id="form-register" class="hidden" onsubmit="handleRegister(event)">
-      <div style="display:flex; flex-direction:column; gap:16px;">
-        <div class="form-group">
-          <label>Email</label>
-          <input id="reg-email" type="email" class="input" placeholder="you@example.com" required>
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input id="reg-password" type="password" class="input" placeholder="••••••••" minlength="8" required>
-        </div>
-        <button type="submit" id="reg-btn" class="btn btn-primary" style="width:100%; justify-content:center;">
-          Create Account
-        </button>
-      </div>
-    </form>
-  </div>
+  <form id="form-register" class="auth-form hidden" onsubmit="handleRegister(event)">
+    <div class="field">
+      <label>Email</label>
+      <input id="reg-email" type="email" placeholder="you@example.com" required autocomplete="email">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="reg-password" type="password" placeholder="••••••••" minlength="8" required autocomplete="new-password">
+    </div>
+    <button type="submit" id="reg-btn" class="auth-btn">Create Account</button>
+  </form>
 </div>
 
 <script src="/static/js/app.js"></script>
 <script>
-  // Already logged in → go home
   if (isLoggedIn()) redirectHome();
 
   function switchTab(tab) {
     const isLogin = tab === 'login';
     document.getElementById('form-login').classList.toggle('hidden', !isLogin);
     document.getElementById('form-register').classList.toggle('hidden', isLogin);
-    document.getElementById('tab-login').style.cssText = isLogin
-      ? 'flex:1;padding:8px;font-size:14px;font-weight:500;background:var(--accent);color:#fff;border:none;cursor:pointer;'
-      : 'flex:1;padding:8px;font-size:14px;font-weight:500;background:transparent;color:var(--text);border:none;cursor:pointer;';
-    document.getElementById('tab-register').style.cssText = !isLogin
-      ? 'flex:1;padding:8px;font-size:14px;font-weight:500;background:var(--accent);color:#fff;border:none;cursor:pointer;'
-      : 'flex:1;padding:8px;font-size:14px;font-weight:500;background:transparent;color:var(--text);border:none;cursor:pointer;';
+    document.getElementById('tab-pill').className = `tab-pill ${isLogin ? 'on-login' : 'on-register'}`;
+    document.getElementById('tab-login').className = `tab-btn ${isLogin ? 'active' : ''}`;
+    document.getElementById('tab-register').className = `tab-btn ${!isLogin ? 'active' : ''}`;
+    const form = document.getElementById(isLogin ? 'form-login' : 'form-register');
+    form.style.animation = 'none';
+    form.offsetHeight;
+    form.style.animation = '';
   }
 
   async function handleLogin(e) {

@@ -404,6 +404,100 @@ Agent cards show badges: `🔧 tool_name`, `📚 kb_name` (purple), `🌐 wc_nam
 
 ---
 
+## Vinu — AI Workspace Builder
+
+Vinu is a conversational AI that designs and deploys Cortex workspaces through chat. Instead of manually creating agents, the user describes what they want to build and Vinu produces a structured plan, then provisions everything automatically.
+
+Access: click **✨ Vinu** on the dashboard sidebar.
+
+### Conversation Flow
+
+| Phase | What happens |
+|-------|-------------|
+| **gathering** | Vinu greets the user and asks what they want to build |
+| **clarifying** | Vinu asks 2–3 targeted questions (e.g. "What's the website URL?") |
+| **planning** | Vinu proposes a workspace plan with reasoning for every component |
+| **confirmed** | User approves; Vinu generates the final plan JSON |
+
+The user confirms with "yes", "build it", "looks good", etc. Vinu never self-confirms.
+
+### Project Patterns
+
+Vinu handles these common patterns out of the box:
+
+| Pattern | What gets built |
+|---------|----------------|
+| Website / Product Chatbot | 1 WC + 1 agent with `collection_search` |
+| Document / KB Bot | 1 KB + 1 agent with `knowledge_base_search` |
+| Customer Support Bot | KB and/or WC + optional email/ticket tools |
+| Research / Data Assistant | `web_search` (Tavily) — no KB/WC needed |
+| Sales / CRM Assistant | Salesforce tools + optional Gmail |
+| Developer / Code Assistant | GitHub tools |
+| Productivity Agent | Gmail + Google Calendar |
+| Multi-step Pipeline | Multiple agents with dependencies |
+
+### Plan Card
+
+Once a plan is ready, Vinu renders a plan card in the chat with:
+
+- **Plan reasoning** — why this architecture (shown as a highlighted bar)
+- **Per-agent `why`** — what specific problem each agent solves
+- **Per-KB `why`** — why a KB is needed instead of web search
+- **Per-WC `why`** — what website content the agent must search
+- **🚀 Build Workspace** button — triggers the build SSE stream
+- **✏ Tweak** — opens the chat to refine the plan
+
+### Build Process (SSE)
+
+`POST /vinu/build` streams Server-Sent Events:
+
+| Event | Payload |
+|-------|---------|
+| `step` | `{step: "...", status: "running" \| "done", result?: {id}}` |
+| `done` | `{workspace_id, workspace_name, kbs_created, wcs_created, connectors_needed, agents_summary}` |
+| `error` | `{message: "..."}` |
+
+Steps in order: create workspace → create KBs → create WCs (+ scrape if URL given) → create agents.
+
+### Post-Build Action Cards
+
+After build, Vinu shows action cards for any setup the user must complete:
+
+- **Upload Documents** — one card per KB with a link to the KB file-upload page
+- **Add Website URLs** — one card per WC with a link to add and crawl URLs
+- **Connect Required Services** — one card per OAuth connector (Gmail, GitHub, etc.) the agents need, with instructions to go to the Connectors panel
+
+Connectors that are always available (Tavily web search, built-in KB/WC search) are excluded from this list automatically.
+
+### Vinu API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/vinu/chat` | SSE: send message, receive streamed reply + optional plan |
+| `POST` | `/vinu/build` | SSE: provision workspace from a confirmed plan |
+| `GET` | `/vinu/conversations` | List Vinu conversations (cursor-paginated) |
+| `DELETE` | `/vinu/conversations/{id}` | Delete a conversation |
+| `GET` | `/vinu/conversations/{id}/messages` | Messages + `last_plan` + `last_build` |
+| `GET` | `/vinu/settings` | Get Vinu agent name |
+| `PATCH` | `/vinu/settings` | Update Vinu agent name |
+
+### Conversation Persistence
+
+- Every user message and Vinu reply is stored in `vinu_messages`
+- The confirmed plan JSON is stored in `last_plan` on the conversation
+- Conversations are auto-titled via the `title_generation` Langfuse prompt
+- Memory compression kicks in when the conversation exceeds `VINU_COMPRESS_TOKEN_THRESHOLD` tokens — older messages are compressed using the `memory_compression` prompt
+
+### Settings
+
+| Setting | Env var | Default |
+|---------|---------|---------|
+| Vinu agent display name | per-user, stored in `users.vinu_agent_name` | `Vinu` |
+| Memory window (messages kept uncompressed) | `VINU_MEMORY_WINDOW` | `20` |
+| Compress threshold (tokens) | `VINU_COMPRESS_TOKEN_THRESHOLD` | `6000` |
+
+---
+
 ## Orchestration — Kahn's Topological Sort
 
 `core/dependency_resolver.py` — Kahn's algorithm on the plan's `depends_on` edges.

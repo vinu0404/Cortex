@@ -211,10 +211,16 @@
     finally { btn.disabled = false; btn.textContent = 'Save'; }
   }
 
-  async function deletePersona(id) {
-    if (!confirm('Delete persona?')) return;
-    try { await apiDelete(`personas/${id}`); await init(); }
-    catch (err) { toast(err.message, 'error'); }
+  function deletePersona(id) {
+    confirmDialog({
+      title: 'Delete persona?',
+      message: 'This persona will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try { await apiDelete(`personas/${id}`); await init(); }
+        catch (err) { toast(err.message, 'error'); }
+      },
+    });
   }
 
   function timeSince(isoStr) {

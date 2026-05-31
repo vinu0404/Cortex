@@ -190,3 +190,34 @@ async function* sseStream(path, body) {
 // ---- Modal helpers ----
 function showModal(id) { document.getElementById(id)?.classList.remove('hidden'); }
 function hideModal(id) { document.getElementById(id)?.classList.add('hidden'); }
+
+// ---- Confirm dialog ----
+function confirmDialog({ title, message, confirmText = 'Delete', confirmClass = 'btn-danger', onConfirm }) {
+  let modal = document.getElementById('confirm-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'confirm-modal';
+    modal.className = 'modal-overlay hidden';
+    modal.innerHTML = `
+      <div class="modal" style="max-width:400px;">
+        <div class="modal-header">
+          <span class="modal-title" id="confirm-modal-title"></span>
+          <button class="modal-close" onclick="hideModal('confirm-modal')">×</button>
+        </div>
+        <p id="confirm-modal-msg" style="margin:0 0 24px;font-size:14px;color:var(--text-muted);line-height:1.6;"></p>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="hideModal('confirm-modal')">Cancel</button>
+          <button id="confirm-modal-ok" class="btn btn-danger">Confirm</button>
+        </div>
+      </div>`;
+    modal.addEventListener('click', e => { if (e.target === modal) hideModal('confirm-modal'); });
+    document.body.appendChild(modal);
+  }
+  document.getElementById('confirm-modal-title').textContent = title;
+  document.getElementById('confirm-modal-msg').textContent = message;
+  const btn = document.getElementById('confirm-modal-ok');
+  btn.textContent = confirmText;
+  btn.className = `btn ${confirmClass}`;
+  btn.onclick = () => { hideModal('confirm-modal'); onConfirm(); };
+  showModal('confirm-modal');
+}
