@@ -67,6 +67,7 @@ async def generate_plan(
     model_id: str,
     api_key: str,
     conversation_id: str,
+    is_embed: bool = False,
 ) -> ExecutionPlan:
     registry = get_registry()
 
@@ -108,6 +109,16 @@ async def generate_plan(
         "long_term_memory": json.dumps(long_term_memory.model_dump()),
         "query": query,
     })
+
+    if is_embed:
+        prompt_text += (
+            "\n\n## Request Source: Embedded Chatbot\n"
+            "This query comes from an embedded chatbot on an external website — not the workspace owner. "
+            "Prefer agents with Knowledge Bases [KB] or Website Collections [WC] attached. "
+            "Avoid routing to agents whose only capability is external API tools (email, calendar, CRM) "
+            "unless the user explicitly asks for such actions. "
+            "Prioritise comprehensive, self-contained answers."
+        )
 
     messages = [{"role": "user", "content": prompt_text}]
 

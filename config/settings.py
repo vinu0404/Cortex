@@ -129,6 +129,9 @@ class Settings(BaseSettings):
     WC_TOP_K_DENSE:             int = 50
     WC_TOP_K_FINAL:             int = 5
 
+    # --- Embed ---
+    EMBED_RATE_LIMIT_PER_HOUR: int = 50
+
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Workspace Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .stat-card { border:1px solid var(--border); border-radius:var(--radius); padding:20px; background:var(--bg); }
+    .stat-val { font-size:28px; font-weight:700; line-height:1.2; }
+    .stat-label { font-size:12px; color:var(--text-muted); margin-top:4px; }
+    .conv-row { display:flex; align-items:center; padding:10px 0; border-bottom:1px solid var(--border); gap:12px; cursor:pointer; }
+    .conv-row:last-child { border-bottom:none; }
+    .conv-row:hover { background:var(--surface); margin:0 -12px; padding:10px 12px; border-radius:6px; }
+    .conv-title { flex:1; font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .conv-meta { font-size:12px; color:var(--text-muted); flex-shrink:0; }
+    .msg-thread { display:flex; flex-direction:column; gap:8px; padding:12px; background:var(--surface); border-radius:var(--radius); }
+    .thread-msg { font-size:12px; padding:8px 12px; border-radius:8px; }
+    .thread-msg.user { background:#111; color:#fff; align-self:flex-end; max-width:80%; }
+    .thread-msg.assistant { background:#e8e8e8; color:#111; max-width:90%; }
+    .thread-msg .role { font-size:10px; opacity:0.6; margin-bottom:2px; }
+  </style>
+</head>
+<body>
+
+<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a id="back-link" href="/workspace.html" style="color:var(--text-muted); font-size:13px;">← Workspace</a>
+    <span style="color:var(--border);">|</span>
+    <span id="ws-name" style="font-weight:600; font-size:15px;"></span>
+    <span style="font-size:13px; color:var(--text-muted);">Dashboard</span>
+  </div>
+</nav>
+
+<div style="max-width:900px; margin:0 auto; padding:24px;">
+
+  <!-- Stats row -->
+  <h2 style="font-size:15px; font-weight:600; margin-bottom:16px;">Overview</h2>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:32px;">
+    <div class="stat-card">
+      <div class="stat-val" id="stat-convs">—</div>
+      <div class="stat-label">Conversations</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="stat-msgs">—</div>
+      <div class="stat-label">Messages</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="stat-cost">—</div>
+      <div class="stat-label">Total Cost (USD)</div>
+    </div>
+  </div>
+
+  <!-- Conversation list -->
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+    <h2 style="font-size:15px; font-weight:600;">Conversation History</h2>
+    <button id="load-more-btn" onclick="loadMore()" class="btn btn-secondary btn-sm" style="display:none;">Load more</button>
+  </div>
+
+  <div id="conv-list" style="border:1px solid var(--border); border-radius:var(--radius); padding:0 12px; background:var(--bg);">
+    <div style="padding:20px; color:var(--text-muted); text-align:center; font-size:13px;">Loading…</div>
+  </div>
+
+  <!-- Message thread viewer -->
+  <div id="conv-viewer" style="display:none; margin-top:24px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+      <h3 id="conv-viewer-title" style="font-size:14px; font-weight:600;"></h3>
+      <button onclick="closeViewer()" class="btn btn-secondary btn-sm">Close</button>
+    </div>
+    <div id="conv-viewer-messages" class="msg-thread"></div>
+    <div id="conv-viewer-load-more" style="margin-top:8px; text-align:center; display:none;">
+      <button onclick="loadMoreMessages()" class="btn btn-secondary btn-sm">Load older messages</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+  const wsId = new URLSearchParams(location.search).get('id');
+  if (!wsId) redirectHome();
+  document.getElementById('back-link').href = `/workspace.html?id=${wsId}`;
+
+  let convOffset = 0;
+  const CONV_LIMIT = 50;
+  let viewerConvId = null;
+  let msgCursor = null;
+
+  async function init() {
+    try {
+      const [ws, stats] = await Promise.all([
+        apiGet(`workspaces/${wsId}`),
+        apiGet(`workspaces/${wsId}/stats`),
+      ]);
+      document.getElementById('ws-name').textContent = ws.name;
+      document.getElementById('stat-convs').textContent = fmtNum(stats.conversation_count);
+      document.getElementById('stat-msgs').textContent = fmtNum(stats.message_count);
+      document.getElementById('stat-cost').textContent = '$' + (stats.total_cost_usd || 0).toFixed(4);
+    } catch (err) {
+      console.error('Failed to load stats:', err);
+    }
+    await loadConversations(true);
+  }
+
+  async function loadConversations(reset = false) {
+    if (reset) { convOffset = 0; document.getElementById('conv-list').innerHTML = ''; }
+    try {
+      const convs = await apiGet(`workspaces/${wsId}/conversations?limit=${CONV_LIMIT}&offset=${convOffset}`);
+      renderConversations(convs || [], reset);
+      convOffset += (convs || []).length;
+      document.getElementById('load-more-btn').style.display = (convs || []).length === CONV_LIMIT ? '' : 'none';
+    } catch (err) {
+      document.getElementById('conv-list').innerHTML = `<div style="padding:20px; color:var(--danger); font-size:13px;">Failed to load conversations.</div>`;
+    }
+  }
+
+  function loadMore() { loadConversations(false); }
+
+  function renderConversations(convs, reset) {
+    const el = document.getElementById('conv-list');
+    if (reset) el.innerHTML = '';
+    if (!convs.length && reset) {
+      el.innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center; font-size:13px;">No conversations yet.</div>';
+      return;
+    }
+    for (const conv of convs) {
+      const row = document.createElement('div');
+      row.className = 'conv-row';
+      const date = new Date(conv.created_at).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+      row.innerHTML = `
+        <div class="conv-title">${esc(conv.title)}</div>
+        <div class="conv-meta">${conv.message_count} msg${conv.message_count !== 1 ? 's' : ''}</div>
+        <div class="conv-meta">${date}</div>
+        <div class="conv-meta">${conv.total_cost_usd > 0 ? '$' + conv.total_cost_usd.toFixed(4) : ''}</div>
+      `;
+      row.onclick = () => openViewer(conv.id, conv.title);
+      el.appendChild(row);
+    }
+  }
+
+  async function openViewer(convId, title) {
+    viewerConvId = convId;
+    msgCursor = null;
+    document.getElementById('conv-viewer').style.display = '';
+    document.getElementById('conv-viewer-title').textContent = title || 'Conversation';
+    document.getElementById('conv-viewer-messages').innerHTML = '<div style="color:var(--text-muted); font-size:12px;">Loading…</div>';
+    document.getElementById('conv-viewer-load-more').style.display = 'none';
+    await loadMessages(true);
+    document.getElementById('conv-viewer').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function closeViewer() {
+    document.getElementById('conv-viewer').style.display = 'none';
+    viewerConvId = null;
+  }
+
+  async function loadMessages(reset = false) {
+    if (!viewerConvId) return;
+    const path = `chat/conversations/${viewerConvId}/messages?limit=30${msgCursor ? '&cursor=' + encodeURIComponent(msgCursor) : ''}`;
+    try {
+      const data = await apiGet(path);
+      const messages = data.messages || data.items || [];
+      const hasMore = data.has_more || false;
+      const nextCursor = data.prev_cursor || null;
+
+      const container = document.getElementById('conv-viewer-messages');
+      if (reset) container.innerHTML = '';
+      if (!messages.length && reset) {
+        container.innerHTML = '<div style="color:var(--text-muted); font-size:12px;">No messages.</div>';
+        return;
+      }
+      // Messages come newest-first; display oldest-first
+      const ordered = reset ? [...messages].reverse() : messages;
+      for (const msg of ordered) {
+        const div = document.createElement('div');
+        div.className = `thread-msg ${msg.role}`;
+        div.innerHTML = `<div class="role">${esc(msg.role)}</div><div style="white-space:pre-wrap;">${esc(msg.content || '')}</div>`;
+        if (reset) container.appendChild(div);
+        else container.insertBefore(div, container.firstChild);
+      }
+      msgCursor = nextCursor;
+      document.getElementById('conv-viewer-load-more').style.display = hasMore ? '' : 'none';
+    } catch (err) {
+      document.getElementById('conv-viewer-messages').innerHTML = '<div style="color:var(--danger); font-size:12px;">Failed to load messages.</div>';
+    }
+  }
+
+  function loadMoreMessages() { loadMessages(false); }
+
+  function fmtNum(n) { return (n || 0).toLocaleString(); }
+  function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  init();
+</script>
+</body>
+</html>

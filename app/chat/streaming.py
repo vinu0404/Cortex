@@ -71,13 +71,15 @@ async def chat_stream(
     query: str,
     user_id: UUID,
     persona_id: UUID | None,
+    is_embed: bool = False,
+    embed_hitl_auto_approve: bool = True,
 ) -> AsyncGenerator[str, None]:
     start_time = time.monotonic()
 
     try:
         await TokenBudgetService().check_budget(user_id)
     except TokenBudgetExceededError as e:
-        yield sse_event({"message": e.message}, "error")
+        yield sse_event({"code": "BUDGET_EXCEEDED", "message": e.message}, "error")
         return
 
     # Load all workspace context in one scoped session — released before any LLM call
@@ -130,6 +132,7 @@ async def chat_stream(
             model_id=master_model,
             api_key=master_key,
             conversation_id=str(conversation_id),
+            is_embed=is_embed,
         )
     except PlanValidationError as e:
         yield sse_event({"message": str(e)}, "error")
@@ -161,6 +164,7 @@ async def chat_stream(
         api_keys_db=api_keys_db,
         connector_tokens_db=connector_tokens_db,
         persona=persona_prompt,
+        is_embed=is_embed,
     )
 
     hitl_futures: dict[str, asyncio.Future] = {}
@@ -168,6 +172,9 @@ async def chat_stream(
 
     def on_hitl_needed(agent_id: str, agent_name: str, tool_names: list[str]) -> asyncio.Future:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
+        if is_embed:
+            future.set_result({"approved": embed_hitl_auto_approve, "instructions": None, "request_id": "embed-auto"})
+            return future
         hitl_futures[agent_id] = future
         return future
 
@@ -314,7 +321,7 @@ async def chat_stream(
             MessageRoleEnum.assistant,
             response_text,
             latency_ms=elapsed_ms,
-            total_cost_usd=round(total_cost, 8) if total_cost > 0 else None,
+            total_cost_usd=round(total_cost, 8),
             token_details=token_details if token_details["total_tokens"] > 0 else None,
             sources=sources or None,
         )

@@ -33,6 +33,7 @@ class OrchestrationContext:
         api_keys_db: dict[UUID, str],  # api_key_id → decrypted key
         connector_tokens_db: dict[str, dict],  # connector_slug → decrypted token dict
         persona: str | None = None,
+        is_embed: bool = False,
     ):
         self.user_id = user_id
         self.conversation_id = conversation_id
@@ -43,6 +44,7 @@ class OrchestrationContext:
         self.api_keys_db = api_keys_db
         self.connector_tokens_db = connector_tokens_db
         self.persona = persona
+        self.is_embed = is_embed
 
 
 async def execute_plan(
@@ -172,7 +174,7 @@ async def _run_agent(
 
     start = time.monotonic()
     output = await run_dynamic_agent(
-        agent_input, agent_def, model_id, raw_key, per_agent_tokens
+        agent_input, agent_def, model_id, raw_key, per_agent_tokens, is_embed=context.is_embed
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
     output.resource_usage["time_taken_ms"] = elapsed_ms

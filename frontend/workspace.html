@@ -21,7 +21,11 @@
     <span style="color:var(--border);">|</span>
     <span id="ws-name" style="font-weight:600; font-size:15px;"></span>
   </div>
-  <button onclick="goChat()" class="btn btn-primary btn-sm">Open Chat →</button>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <button onclick="goDashboard()" class="btn btn-secondary btn-sm">Dashboard</button>
+    <button id="embed-btn" onclick="openEmbedModal()" class="btn btn-secondary btn-sm">Embed ○</button>
+    <button onclick="goChat()" class="btn btn-primary btn-sm">Open Chat →</button>
+  </div>
 </nav>
 
 <div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
@@ -177,6 +181,17 @@
   </div>
 </div>
 
+<!-- Embed Modal -->
+<div id="modal-embed" class="modal-overlay hidden">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <span class="modal-title">Embed Chatbot</span>
+      <button class="modal-close" onclick="hideModal('modal-embed')">×</button>
+    </div>
+    <div id="embed-modal-body" style="padding:4px 0;"></div>
+  </div>
+</div>
+
 <!-- Add API Key Modal -->
 <div id="modal-add-key" class="modal-overlay hidden">
   <div class="modal">
@@ -227,6 +242,18 @@
     allKbs = kbs || [];
     allWcs = wcs || [];
     document.getElementById('ws-name').textContent = ws.name;
+    _embedState.enabled = ws.embed_enabled || false;
+    _embedState.hitl_auto_approve = ws.embed_hitl_auto_approve ?? true;
+    _embedState.token = ws.embed_token || null;
+    _embedState.budget_usd = ws.embed_budget_usd || null;
+    _embedState.budget_tokens = ws.embed_budget_tokens || null;
+    _embedState.spend_usd = ws.embed_spend_usd || 0;
+    _embedState.spend_tokens = ws.embed_spend_tokens || 0;
+    if (_embedState.token) {
+      const embedUrl = `${window.location.origin}/embed/${_embedState.token}`;
+      _embedState.snippet = `<iframe src="${embedUrl}" width="400" height="600" frameborder="0" allow="clipboard-write"></iframe>`;
+    }
+    _updateEmbedBtn();
     allInstances = instances || [];
 
     // Build model list grouped by key
@@ -676,7 +703,147 @@
   }
 
   function goChat() { window.location.href = `/chat.html?workspace_id=${wsId}`; }
+  function goDashboard() { window.location.href = `/workspace-dashboard.html?id=${wsId}`; }
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // ---- Embed ----
+  let _embedState = { enabled: false, hitl_auto_approve: true, budget_usd: null, budget_tokens: null, spend_usd: 0, spend_tokens: 0, token: null, snippet: null };
+
+  function _splitTokenLimit(raw) {
+    if (!raw) return { value: '', unit: '1000000' };
+    if (raw >= 1_000_000_000) return { value: raw / 1_000_000_000, unit: '1000000000' };
+    if (raw >= 1_000_000)     return { value: raw / 1_000_000,     unit: '1000000' };
+    return { value: raw / 1000, unit: '1000' };
+  }
+
+  function _updateEmbedBtn() {
+    const btn = document.getElementById('embed-btn');
+    if (!btn) return;
+    btn.textContent = _embedState.enabled ? 'Embed ●' : 'Embed ○';
+    btn.style.color = _embedState.enabled ? 'var(--success, #22c55e)' : '';
+  }
+
+  function openEmbedModal() {
+    _renderEmbedModal();
+    showModal('modal-embed');
+  }
+
+  function _renderEmbedModal() {
+    const body = document.getElementById('embed-modal-body');
+    const enabled = _embedState.enabled;
+    const tok = _splitTokenLimit(_embedState.budget_tokens);
+    body.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+        <span style="font-weight:600;">Enable embed chatbot</span>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <span style="font-size:13px; color:var(--text-muted);">${enabled ? 'ON' : 'OFF'}</span>
+          <input type="checkbox" id="embed-toggle" ${enabled ? 'checked' : ''} onchange="toggleEmbed(this.checked)" style="width:16px;height:16px;">
+        </label>
+      </div>
+      ${enabled ? `
+      <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+          <span style="font-size:12px; font-weight:500; color:var(--text-muted);">Embed snippet</span>
+          <button onclick="copySnippet()" class="btn btn-secondary btn-sm">Copy</button>
+        </div>
+        <pre id="embed-snippet" style="font-size:11px; white-space:pre-wrap; word-break:break-all; margin:0; color:var(--text);">${esc(_embedState.snippet || '')}</pre>
+        <div style="margin-top:8px;">
+          ${_embedState.token ? `<a href="/embed/${_embedState.token}" target="_blank" style="font-size:12px; color:var(--primary);">Open preview ↗</a>` : ''}
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <label style="display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer;">
+          <div>
+            <div style="font-size:13px; font-weight:500;">Auto-approve tool actions for visitors</div>
+            <div style="font-size:12px; color:var(--text-muted);">When off, HITL tools are skipped for embedded visitors</div>
+          </div>
+          <input type="checkbox" id="embed-hitl-toggle" ${_embedState.hitl_auto_approve ? 'checked' : ''} onchange="updateEmbedSettings()" style="width:16px;height:16px; flex-shrink:0;">
+        </label>
+        <div style="border-top:1px solid var(--border); padding-top:12px;">
+          <div style="font-size:13px; font-weight:500; margin-bottom:4px;">Embed usage limits</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">
+            Usage: $${(_embedState.spend_usd || 0).toFixed(4)} spent · ${(_embedState.spend_tokens || 0).toLocaleString()} tokens used
+          </div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div>
+              <label style="font-size:12px; font-weight:500; display:block; margin-bottom:4px;">Cost budget (USD) — embed disables when exceeded</label>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-size:13px;">$</span>
+                <input type="number" id="embed-budget-usd" min="0" step="0.01" placeholder="No limit"
+                  value="${_embedState.budget_usd || ''}"
+                  style="width:100px; padding:4px 8px; font-size:13px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text);"
+                  oninput="updateEmbedSettings()">
+              </div>
+            </div>
+            <div>
+              <label style="font-size:12px; font-weight:500; display:block; margin-bottom:4px;">Token limit — fallback when cost = $0.00</label>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <input type="number" id="embed-budget-tokens-value" min="0" placeholder="No limit"
+                  value="${tok.value}"
+                  style="width:80px; padding:4px 8px; font-size:13px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text);"
+                  oninput="updateEmbedSettings()">
+                <select id="embed-budget-tokens-unit" onchange="updateEmbedSettings()"
+                  style="padding:4px 8px; font-size:13px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text);">
+                  <option value="1000"       ${tok.unit==='1000'       ?'selected':''}>Thousand</option>
+                  <option value="1000000"    ${tok.unit==='1000000'    ?'selected':''}>Million</option>
+                  <option value="1000000000" ${tok.unit==='1000000000' ?'selected':''}>Billion</option>
+                </select>
+                <span style="font-size:12px; color:var(--text-muted);">tokens</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p style="margin-top:16px; font-size:12px; color:var(--text-muted);">Visitors can chat without logging in. Limits accumulate over the lifetime of the embed.</p>
+      ` : '<p style="color:var(--text-muted); font-size:13px;">Enable the embed to get a shareable chatbot snippet for your website.</p>'}
+    `;
+  }
+
+  async function toggleEmbed(enabled) {
+    try {
+      let data;
+      if (enabled) {
+        data = await apiPost(`workspaces/${wsId}/embed/enable`, {});
+      } else {
+        data = await apiDelete(`workspaces/${wsId}/embed`);
+      }
+      _embedState.enabled = data.embed_enabled;
+      _embedState.token = data.embed_token;
+      _embedState.snippet = data.snippet;
+      _embedState.hitl_auto_approve = data.embed_hitl_auto_approve;
+      _embedState.budget_usd = data.embed_budget_usd || null;
+      _embedState.budget_tokens = data.embed_budget_tokens || null;
+      _embedState.spend_usd = data.embed_spend_usd || 0;
+      _embedState.spend_tokens = data.embed_spend_tokens || 0;
+      _updateEmbedBtn();
+      _renderEmbedModal();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function updateEmbedSettings() {
+    const hitl       = document.getElementById('embed-hitl-toggle')?.checked ?? true;
+    const budgetUsd  = parseFloat(document.getElementById('embed-budget-usd')?.value) || 0;
+    const tokVal     = parseFloat(document.getElementById('embed-budget-tokens-value')?.value) || 0;
+    const tokUnit    = parseInt(document.getElementById('embed-budget-tokens-unit')?.value) || 1_000_000;
+    const budgetTokens = Math.round(tokVal * tokUnit);
+    try {
+      const data = await apiPatch(`workspaces/${wsId}/embed`, {
+        embed_hitl_auto_approve: hitl,
+        embed_budget_usd:    budgetUsd,
+        embed_budget_tokens: budgetTokens,
+      });
+      _embedState.hitl_auto_approve = data.embed_hitl_auto_approve;
+      _embedState.budget_usd    = data.embed_budget_usd    || null;
+      _embedState.budget_tokens = data.embed_budget_tokens || null;
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function copySnippet() {
+    navigator.clipboard.writeText(_embedState.snippet || '').then(() => toast('Snippet copied!')).catch(() => {
+      const el = document.getElementById('embed-snippet');
+      if (el) { const r = document.createRange(); r.selectNode(el); window.getSelection().removeAllRanges(); window.getSelection().addRange(r); }
+    });
+  }
 
   init().then(() => { renderToolPicker(); renderKbPicker(); renderWcPicker(); });
 </script>

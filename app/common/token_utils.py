@@ -1,27 +1,10 @@
+import logging
 from dataclasses import dataclass, field
+from typing import Any
 
-# Cost per 1M tokens (input, output) in USD
-MODEL_PRICING: dict[str, tuple[float, float]] = {
-    # Anthropic
-    "claude-opus-4-7": (15.0, 75.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (0.8, 4.0),
-    # OpenAI
-    "gpt-4o": (2.5, 10.0),
-    "gpt-4o-mini": (0.15, 0.6),
-    "gpt-4-turbo": (10.0, 30.0),
-    "o1": (15.0, 60.0),
-    "o3-mini": (1.1, 4.4),
-    # Google
-    "gemini-2.0-flash": (0.1, 0.4),
-    "gemini-1.5-pro": (1.25, 5.0),
-    # Groq
-    "llama-3.3-70b-versatile": (0.59, 0.79),
-    "mixtral-8x7b-32768": (0.24, 0.24),
-    # Mistral
-    "mistral-large-latest": (3.0, 9.0),
-    "mistral-small-latest": (0.2, 0.6),
-}
+import litellm
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,7 +17,7 @@ class TokenUsage:
     agent_breakdown: dict[str, "TokenUsage"] = field(default_factory=dict)
 
 
-def calculate_usage(response: object, model: str) -> TokenUsage:
+def calculate_usage(response: Any, model: str) -> TokenUsage:
     usage = getattr(response, "usage", None)
     if not usage:
         return TokenUsage(model=model)
@@ -53,10 +36,33 @@ def calculate_usage(response: object, model: str) -> TokenUsage:
     )
 
 
-def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def _with_provider_prefix(model: str) -> str:
     base = model.split("/")[-1]
-    pricing = MODEL_PRICING.get(base) or MODEL_PRICING.get(model)
-    if not pricing:
-        return 0.0
-    input_cost, output_cost = pricing
-    return (input_tokens * input_cost + output_tokens * output_cost) / 1_000_000
+    if base.startswith("claude-"):
+        return f"anthropic/{base}"
+    if base.startswith("gemini-"):
+        return f"gemini/{base}"
+    if base.startswith(("mistral-", "mixtral-")):
+        return f"mistral/{base}"
+    if base.startswith(("llama-", "llama3")):
+        return f"groq/{base}"
+    if base.startswith("deepseek-"):
+        return f"deepseek/{base}"
+    return model  # OpenAI and already-prefixed models need no change
+
+
+def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    # Try with provider prefix first (e.g. anthropic/claude-3-5-sonnet-20241022),
+    # then bare name — litellm needs the prefix for non-OpenAI models.
+    for model_name in dict.fromkeys([_with_provider_prefix(model), model]):
+        try:
+            prompt_cost, completion_cost = litellm.cost_per_token(
+                model=model_name,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+            )
+            return prompt_cost + completion_cost
+        except Exception:
+            pass
+    logger.warning("litellm.cost_per_token failed for model %r — cost recorded as 0.0", model)
+    return 0.0

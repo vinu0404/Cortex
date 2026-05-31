@@ -126,6 +126,9 @@ app.include_router(knowledge_bases_router, tags=["knowledge-bases"])
 from app.website_collections.controller import router as website_collections_router
 app.include_router(website_collections_router, tags=["website-collections"])
 
+from app.embed.controller import router as embed_router
+app.include_router(embed_router, tags=["embed"])
+
 
 # ---- Health & Frontend ----
 @app.get("/health")
@@ -172,3 +175,8 @@ async def serve_knowledge_bases():
 @app.get("/website-collections.html")
 async def serve_website_collections():
     return FileResponse("frontend/website-collections.html")
+
+
+@app.get("/workspace-dashboard.html")
+async def serve_workspace_dashboard():
+    return FileResponse("frontend/workspace-dashboard.html")

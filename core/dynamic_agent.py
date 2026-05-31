@@ -25,7 +25,7 @@ def _is_retriable(exc: Exception) -> bool:
     return "rate" in msg or "timeout" in msg or "connection" in msg or "500" in msg or "503" in msg
 
 
-def _build_system_prompt(agent_def: dict, agent_input: AgentInput) -> str:
+def _build_system_prompt(agent_def: dict, agent_input: AgentInput, is_embed: bool = False) -> str:
     parts = []
     if agent_def.get("system_prompt"):
         parts.append(agent_def["system_prompt"])
@@ -52,6 +52,14 @@ def _build_system_prompt(agent_def: dict, agent_input: AgentInput) -> str:
     if agent_input.hitl_context and agent_input.hitl_context.approved:
         if agent_input.hitl_context.instructions:
             parts.append(f"\n## Human Instructions for Tool Use\n{agent_input.hitl_context.instructions}")
+
+    if is_embed:
+        parts.append(
+            "\n\n## Embed Context\n"
+            "This conversation comes from an embedded chatbot on an external website. "
+            "Prioritise answering from knowledge bases and website collections before reaching for external tools. "
+            "Search KB/WC thoroughly. Give complete, self-contained answers — the visitor has no other context."
+        )
 
     return "\n".join(parts)
 
@@ -122,6 +130,7 @@ async def run_dynamic_agent(
     model_id: str,
     api_key: str,
     connector_tokens_db: dict[str, dict] | None = None,
+    is_embed: bool = False,
 ) -> AgentOutput:
     if agent_input.hitl_context and not agent_input.hitl_context.approved:
         return AgentOutput(
@@ -133,7 +142,7 @@ async def run_dynamic_agent(
         )
 
     tool_schemas = _build_tool_schemas(agent_input.tools) if agent_input.tools else []
-    system_prompt = _build_system_prompt(agent_def, agent_input)
+    system_prompt = _build_system_prompt(agent_def, agent_input, is_embed=is_embed)
 
     messages = [
         {"role": "system", "content": system_prompt},

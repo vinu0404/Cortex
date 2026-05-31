@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chatbot</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fff; color: #111; font-size: 14px; line-height: 1.6;
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    }
+    #messages {
+      flex: 1; overflow-y: auto; padding: 16px 12px;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .msg { display: flex; gap: 8px; align-items: flex-start; }
+    .msg.user { flex-direction: row-reverse; }
+    .bubble {
+      max-width: 80%; padding: 10px 14px; border-radius: 14px;
+      font-size: 13px; line-height: 1.55; word-break: break-word;
+    }
+    .msg.user .bubble { background: #111; color: #fff; border-bottom-right-radius: 4px; }
+    .msg.assistant .bubble { background: #f4f4f4; color: #111; border-bottom-left-radius: 4px; }
+    .bubble p { margin: 0; } .bubble p + p { margin-top: 8px; }
+    .bubble ul, .bubble ol { padding-left: 18px; }
+    .bubble pre { background:#e8e8e8; border-radius:6px; padding:8px 10px; overflow-x:auto; font-size:12px; }
+    .bubble code { background:#e8e8e8; border-radius:3px; padding:1px 4px; font-size:12px; }
+    .bubble pre code { background:none; padding:0; }
+    .avatar { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0; margin-top:2px; }
+    .msg.user .avatar { background:#111; color:#fff; }
+    .msg.assistant .avatar { background:#e5e5e5; color:#111; }
+
+    #status-bar {
+      font-size:12px; color:#888; padding:4px 16px; min-height:20px;
+      display:flex; align-items:center; gap:6px;
+    }
+    .dot { width:6px; height:6px; border-radius:50%; background:#888; display:inline-block; animation:blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:.2} 50%{opacity:1} }
+
+    #input-area {
+      border-top: 1px solid #e5e5e5; padding: 10px 12px;
+      display: flex; gap: 8px; align-items: flex-end; background:#fff;
+    }
+    #query-input {
+      flex: 1; border: 1px solid #e5e5e5; border-radius: 20px;
+      padding: 8px 14px; font-size: 13px; resize: none; outline: none;
+      font-family: inherit; line-height: 1.5; max-height: 100px; overflow-y: auto;
+    }
+    #query-input:focus { border-color: #111; }
+    #send-btn {
+      width: 36px; height: 36px; border-radius: 50%; border: none;
+      background: #111; color: #fff; font-size: 16px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    #send-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+    .suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .suggestion-chip {
+      border: 1px solid #e5e5e5; border-radius: 16px; padding: 4px 10px;
+      font-size: 12px; cursor: pointer; background: #fff; color: #111;
+    }
+    .suggestion-chip:hover { background: #f4f4f4; }
+
+    .clarif-chip {
+      display:inline-block; padding:4px 12px; border-radius:999px;
+      border:1px solid #e5e5e5; cursor:pointer; font-size:12px;
+      margin:3px; background:#fff; color:#111;
+    }
+    .clarif-chip.selected { background:#111; color:#fff; border-color:#111; }
+
+    .sources { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .source-link { font-size: 11px; color: #555; text-decoration: none; }
+    .source-link:hover { text-decoration: underline; }
+
+    #error-msg { color: #cc0000; font-size: 12px; padding: 4px 16px; }
+  </style>
+</head>
+<body>
+
+<div id="messages"></div>
+<div id="status-bar"></div>
+<div id="error-msg"></div>
+<div id="input-area">
+  <textarea id="query-input" placeholder="Ask a question…" rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+  <button id="send-btn" onclick="sendMessage()">&#9650;</button>
+</div>
+
+<script>
+  const embedToken = location.pathname.split('/').filter(Boolean).pop();
+  const LS_KEY = 'cortex_embed_' + embedToken;
+  let convId = localStorage.getItem(LS_KEY) || null;
+  let streaming = false;
+
+  const messagesEl = document.getElementById('messages');
+  const statusEl = document.getElementById('status-bar');
+  const errorEl = document.getElementById('error-msg');
+  const inputEl = document.getElementById('query-input');
+  const sendBtn = document.getElementById('send-btn');
+
+  if (typeof marked !== 'undefined') {
+    marked.setOptions({ breaks: true, gfm: true });
+  }
+
+  function renderMarkdown(text) {
+    if (typeof marked === 'undefined') return escHtml(text);
+    try { return marked.parse(text); } catch { return escHtml(text); }
+  }
+
+  function escHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function appendMessage(role, html, extras = {}) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    const avatarChar = role === 'user' ? 'U' : '✦';
+    div.innerHTML = `<div class="avatar">${avatarChar}</div><div class="bubble">${html}</div>`;
+
+    if (extras.sources?.length) {
+      const srcDiv = document.createElement('div');
+      srcDiv.className = 'sources';
+      extras.sources.forEach(s => {
+        const a = document.createElement('a');
+        a.className = 'source-link';
+        a.textContent = '↗ ' + (s.title || s.url || 'Source');
+        if (s.url) { a.href = s.url; a.target = '_blank'; a.rel = 'noopener'; }
+        srcDiv.appendChild(a);
+      });
+      div.querySelector('.bubble').appendChild(srcDiv);
+    }
+
+    messagesEl.appendChild(div);
+    if (extras.suggestions?.length) appendSuggestions(extras.suggestions);
+    scrollBottom();
+    return div.querySelector('.bubble');
+  }
+
+  function appendSuggestions(questions) {
+    const div = document.createElement('div');
+    div.className = 'suggestions';
+    questions.forEach(q => {
+      const chip = document.createElement('button');
+      chip.className = 'suggestion-chip';
+      chip.textContent = typeof q === 'string' ? q : (q.question || q);
+      chip.onclick = () => { inputEl.value = chip.textContent; sendMessage(); };
+      div.appendChild(chip);
+    });
+    messagesEl.appendChild(div);
+    scrollBottom();
+  }
+
+  function renderClarificationForm(bubble, questions, originalQuery) {
+    const form = document.createElement('div');
+    form.style.cssText = 'margin-top:8px;';
+
+    const header = document.createElement('p');
+    header.style.cssText = 'font-size:13px; font-weight:600; margin-bottom:10px;';
+    header.textContent = 'I need a few clarifications before I can help:';
+    form.appendChild(header);
+
+    const answers = {};
+
+    questions.forEach((q, i) => {
+      const block = document.createElement('div');
+      block.style.cssText = 'margin-bottom:12px;';
+
+      const qEl = document.createElement('p');
+      qEl.style.cssText = 'font-size:13px; margin-bottom:6px;';
+      qEl.textContent = `${i + 1}. ${q.question}`;
+      block.appendChild(qEl);
+
+      if (q.options && q.options.length > 0) {
+        answers[i] = null;
+        const chipsEl = document.createElement('div');
+
+        const otherInput = document.createElement('input');
+        otherInput.type = 'text';
+        otherInput.placeholder = 'Type your answer…';
+        otherInput.style.cssText = 'display:none; margin-top:6px; width:100%; padding:4px 8px; font-size:13px; border:1px solid #e5e5e5; border-radius:6px; background:#fff; color:#111; box-sizing:border-box;';
+        otherInput.oninput = () => { answers[i] = otherInput.value; };
+
+        q.options.forEach(opt => {
+          const chip = document.createElement('button');
+          chip.className = 'clarif-chip';
+          chip.type = 'button';
+          chip.textContent = opt;
+          chip.onclick = () => {
+            chipsEl.querySelectorAll('.clarif-chip').forEach(c => c.classList.remove('selected'));
+            chip.classList.add('selected');
+            otherInput.style.display = 'none';
+            answers[i] = opt;
+          };
+          chipsEl.appendChild(chip);
+        });
+
+        const otherChip = document.createElement('button');
+        otherChip.className = 'clarif-chip';
+        otherChip.type = 'button';
+        otherChip.textContent = '✏ Other';
+        otherChip.onclick = () => {
+          chipsEl.querySelectorAll('.clarif-chip').forEach(c => c.classList.remove('selected'));
+          otherChip.classList.add('selected');
+          otherInput.style.display = 'block';
+          otherInput.focus();
+          answers[i] = otherInput.value;
+        };
+
+        chipsEl.appendChild(otherChip);
+        block.appendChild(chipsEl);
+        block.appendChild(otherInput);
+      } else {
+        answers[i] = '';
+        const ta = document.createElement('textarea');
+        ta.style.cssText = 'width:100%; min-height:40px; font-size:13px; resize:none; padding:6px 10px; border:1px solid #e5e5e5; border-radius:8px; font-family:inherit; box-sizing:border-box;';
+        ta.placeholder = 'Type your answer…';
+        ta.oninput = () => { answers[i] = ta.value; };
+        block.appendChild(ta);
+      }
+
+      form.appendChild(block);
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.style.cssText = 'margin-top:4px; padding:6px 14px; background:#111; color:#fff; border:none; border-radius:8px; font-size:13px; cursor:pointer;';
+    submitBtn.textContent = 'Submit answers';
+    submitBtn.onclick = () => {
+      for (let i = 0; i < questions.length; i++) {
+        if (!answers[i] && answers[i] !== '') { showError('Please answer all questions.'); return; }
+        if (typeof answers[i] === 'string' && !answers[i].trim()) { showError('Please answer all questions.'); return; }
+      }
+      const clarificationBlock = questions.map((q, i) => `Q${i + 1}: ${q.question}\nA${i + 1}: ${answers[i]}`).join('\n');
+      const enrichedQuery = `[Clarifications:\n${clarificationBlock}]\n\n${originalQuery}`;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitted…';
+      form.querySelectorAll('button, textarea, input').forEach(el => { el.disabled = true; });
+      sendMessage(enrichedQuery);
+    };
+    form.appendChild(submitBtn);
+
+    bubble.appendChild(form);
+    scrollBottom();
+  }
+
+  function scrollBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function setStatus(text) { statusEl.innerHTML = text ? `<span class="dot"></span>${escHtml(text)}` : ''; }
+  function clearStatus() { statusEl.innerHTML = ''; }
+  function showError(msg) { errorEl.textContent = msg; setTimeout(() => { errorEl.textContent = ''; }, 5000); }
+
+  async function sendMessage(prefillQuery = null) {
+    const query = prefillQuery || inputEl.value.trim();
+    if (!query || streaming) return;
+
+    if (!prefillQuery) { inputEl.value = ''; autoResize(inputEl); }
+    streaming = true;
+    sendBtn.disabled = true;
+
+    appendMessage('user', escHtml(query));
+    setStatus('Thinking…');
+
+    let assistantBubble = null;
+    let accText = '';
+    let finalSources = [];
+    let finalSuggestions = [];
+
+    try {
+      const resp = await fetch(`/embed/${embedToken}/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, conversation_id: convId }),
+      });
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 429) showError('Too many requests — please wait a moment.');
+        else if (resp.status === 404) showError('This chatbot is not available.');
+        else showError(data.message || 'An error occurred.');
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6).trim();
+            if (!raw || raw === 'connected') { currentEvent = null; continue; }
+            const ev = currentEvent;
+            currentEvent = null;
+            try {
+              const data = JSON.parse(raw);
+              if (ev === 'token') {
+                if (!assistantBubble) { assistantBubble = appendMessage('assistant', ''); clearStatus(); }
+                accText += data.text || '';
+                assistantBubble.innerHTML = renderMarkdown(accText);
+                scrollBottom();
+              } else if (ev === 'status') {
+                setStatus(data.agent_name ? `${data.phase || 'Running'}: ${data.agent_name}…` : '');
+              } else if (ev === 'clarification_required') {
+                if (!assistantBubble) { assistantBubble = appendMessage('assistant', ''); }
+                clearStatus();
+                renderClarificationForm(assistantBubble, data.questions || [], query);
+              } else if (ev === 'sources') {
+                finalSources = data.sources || [];
+              } else if (ev === 'suggestions') {
+                finalSuggestions = data.questions || [];
+              } else if (ev === 'done') {
+                if (data.conversation_id) { convId = data.conversation_id; localStorage.setItem(LS_KEY, convId); }
+                clearStatus();
+              } else if (ev === 'error') {
+                showError(data.message || 'An error occurred.'); clearStatus();
+              } else if (ev === 'plan' || ev === 'agent_progress' || ev === 'compacting') {
+                // silently consume
+              }
+            } catch {}
+          } else if (line === '') {
+            currentEvent = null;
+          }
+        }
+      }
+
+      // Apply final sources and suggestions to last bubble
+      if (assistantBubble) {
+        if (finalSources.length) {
+          const srcDiv = document.createElement('div');
+          srcDiv.className = 'sources';
+          finalSources.forEach(s => {
+            const a = document.createElement('a');
+            a.className = 'source-link';
+            a.textContent = '↗ ' + (s.title || s.url || 'Source');
+            if (s.url) { a.href = s.url; a.target = '_blank'; a.rel = 'noopener'; }
+            srcDiv.appendChild(a);
+          });
+          assistantBubble.appendChild(srcDiv);
+        }
+        if (finalSuggestions.length) appendSuggestions(finalSuggestions);
+        scrollBottom();
+      }
+
+    } catch (err) {
+      showError('Connection error — please try again.');
+    } finally {
+      clearStatus();
+      streaming = false;
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+  }
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,6 +18,13 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    embed_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    embed_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    embed_hitl_auto_approve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    embed_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    embed_budget_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    embed_spend_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    embed_spend_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

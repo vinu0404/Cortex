@@ -137,8 +137,10 @@ celery -A celery_app worker --loglevel=info --concurrency=4
 | `http://localhost:8000/admin.html` | Admin panel (admin role only) |
 | `http://localhost:8000/knowledge-bases.html` | Knowledge Base manager |
 | `http://localhost:8000/website-collections.html` | Website Collection manager |
-| `http://localhost:8000/workspace.html?id=<uuid>` | Agent builder |
+| `http://localhost:8000/workspace.html?id=<uuid>` | Agent builder + Embed + Dashboard buttons |
+| `http://localhost:8000/workspace-dashboard.html?id=<uuid>` | Per-workspace analytics + conversation history |
 | `http://localhost:8000/chat.html?workspace_id=<uuid>` | Chat UI |
+| `http://localhost:8000/embed/<token>` | Public embed chatbot (no login required) |
 | `http://localhost:8000/docs` | Swagger (dev only) |
 
 ---
@@ -505,7 +507,7 @@ event: token         {"text": "..."}
 event: artifact      {"type": "code|table|chart", "title": "...", "content": "..."}
 event: suggestions   {"questions": ["...", "...", "..."]}
 event: done          {"total_ms": ..., "conversation_id": "...", "message_id": "..."}
-event: error         {"message": "..."}
+event: error         {"code": "BUDGET_EXCEEDED|INTERNAL_ERROR|...", "message": "..."}
 ```
 
 **KB/WC status SSE** (separate streams):
@@ -552,35 +554,160 @@ sequenceDiagram
 
 ---
 
+## Workspace Chat Embed
+
+Any workspace can be exported as an embeddable chatbot — paste one `<iframe>` snippet into any website, and visitors can chat with the workspace's agents and knowledge without logging in. The workspace owner's API keys, agents, tools, Knowledge Bases, and Website Collections power the embed. Token usage is charged to the owner.
+
+### Architecture
+
+```
+Visitor browser  →  GET  /embed/{token}          →  embed.html (no auth)
+Visitor browser  →  POST /embed/{token}/stream   →  same SSE pipeline, owner's user context
+Workspace owner  →  POST /workspaces/{id}/embed/enable  →  generate token, return iframe snippet
+Workspace owner  →  DELETE /workspaces/{id}/embed        →  disable embed
+Workspace owner  →  PATCH /workspaces/{id}/embed         →  toggle HITL + budget settings
+```
+
+```mermaid
+sequenceDiagram
+    participant V as Visitor (browser)
+    participant API as FastAPI
+    participant Redis as Redis
+    participant Orch as Orchestrator
+
+    V->>API: GET /embed/{token}
+    API->>API: validate token + embed_enabled
+    API-->>V: embed.html
+
+    V->>API: POST /embed/{token}/stream {query, conversation_id?}
+    API->>Redis: INCR embed_rl:{token}:{ip} (rate limit)
+    API->>API: load workspace + owner from embed_token
+    API->>Orch: chat_stream(is_embed=True, owner user context)
+    Orch-->>V: SSE token/done/error events
+
+    V->>V: localStorage.setItem("cortex_embed_{token}", conversation_id)
+```
+
+### Auth Model
+
+The embed token is the credential — no JWT, no login. The 43-character URL-safe token (`secrets.token_urlsafe(32)`) is generated once when the owner first enables embed and is **preserved** across disable/re-enable cycles (same URL, same snippet). Revoking permanently would require deleting the workspace.
+
+`GET /embed/{token}` validates the token before serving `embed.html`. An invalid or disabled token returns a 404 JSON error, not the HTML page.
+
+### Conversation Persistence
+
+The visitor's `conversation_id` is stored in `localStorage` keyed by `cortex_embed_{token}`. On every page load:
+- If a stored ID exists → sent with the stream request; server verifies it belongs to the workspace
+- If no stored ID, or the ID doesn't belong to the workspace → server creates a fresh conversation and returns its ID
+- The done SSE event carries `conversation_id`; the frontend saves it to localStorage
+
+### Rate Limiting
+
+Redis INCR on key `embed_rl:{token}:{client_ip}` with a 3600-second TTL. If the count exceeds `EMBED_RATE_LIMIT_PER_HOUR` (default 50), the endpoint returns `HTTP 429` with `{"code": "RATE_LIMITED"}`. If Redis is unavailable, the check is skipped and the request proceeds (fail-open, logged as warning).
+
+### HITL Behaviour
+
+Tool actions that `requires_hitl=True` are handled differently for embed visitors vs. authenticated users:
+
+| Setting | Behaviour |
+|---------|-----------|
+| `embed_hitl_auto_approve = True` (default) | HITL future resolved immediately with `approved=True` — tool runs without asking visitor |
+| `embed_hitl_auto_approve = False` | HITL future resolved immediately with `approved=False` — tool is denied, Composer notes it gracefully |
+
+No HITL popup appears in the embed UI. The owner sets this toggle from the embed modal in `workspace.html`.
+
+### Budget Auto-Disable
+
+When the owner's token budget is exhausted, `chat_stream` emits an error SSE with `{"code": "BUDGET_EXCEEDED", ...}`. The embed controller detects this string in the stream chunk and, if `embed_disable_on_budget=True`, atomically sets `embed_enabled=False` via a single `UPDATE WHERE embed_disable_on_budget=True`. Subsequent visits immediately get a 404 — no LLM calls are made.
+
+### Embed Context Injection
+
+When `is_embed=True`, two extra instructions are injected at runtime:
+
+| Component | Injection |
+|-----------|-----------|
+| **Master Agent** (`core/master_agent.py`) | Appended to the planning prompt: prefer agents with KB/WC attached; avoid pure tool-action agents for public visitors |
+| **Dynamic Agent** (`core/dynamic_agent.py`) | Appended to system prompt: search KB/WC thoroughly; give self-contained answers; the visitor has no other context |
+
+This ensures the master agent routes embed queries to knowledge-rich agents rather than action agents (e.g. email, CRM) that are irrelevant for external visitors.
+
+### Workspace Dashboard
+
+`/workspace-dashboard.html?id={workspace_id}` — per-workspace analytics accessible from the workspace header.
+
+**Stats cards** (`GET /workspaces/{id}/stats`):
+- Total conversations
+- Total messages
+- Total cost (USD)
+
+**Conversation history** (`GET /workspaces/{id}/conversations`):
+- Table: title, date, message count, cost per conversation
+- Click row → expands inline to show full message thread
+- Owner can read every message in every conversation in their workspace
+- Offset-paginated (limit/offset query params)
+
+### Embed Modal (workspace.html)
+
+The workspace header gains two new buttons: **Embed** (green ● when active, grey ○ when inactive) and **Dashboard**.
+
+Clicking Embed opens a modal with:
+- **Enable/Disable toggle** — calls `POST .../embed/enable` or `DELETE .../embed`
+- **Iframe snippet** — ready-to-paste `<iframe>` code with one-click copy
+- **Open preview** link — opens embed URL in a new tab
+- **HITL toggle** — "Auto-approve tool actions for visitors" (`PATCH .../embed`)
+- **Budget toggle** — "Disable embed automatically when token budget is exhausted" (`PATCH .../embed`)
+- Warning: "Visitors can chat without logging in. Token usage counts against your budget."
+
+---
+
 ## Memory System
 
 ### Short-Term (per conversation)
 
-Sliding window of `SHORT_TERM_MEMORY_WINDOW` (default 10) messages. When window overflows, the first `SHORT_TERM_COMPRESS_FIRST_N` messages are LLM-compressed into a summary.
+Sliding window of `SHORT_TERM_MEMORY_WINDOW` (default 10) messages. Compression fires on **either** trigger — whichever comes first:
+
+| Trigger | Threshold | Setting |
+|---------|-----------|---------|
+| Message count | non-system messages > 10 | `SHORT_TERM_MEMORY_WINDOW` |
+| Token count | total tokens > 80 000 | `SHORT_TERM_COMPRESS_TOKEN_THRESHOLD` |
+
+Token counting uses `litellm.token_counter(model, messages)` with the workspace's master model. `MemoryManager` is initialised with `model_id` at request time so the count is accurate. Compression fires before agents run — benefits the current request for the token-based trigger, the next request for the count-based trigger.
+
+Each compression covers the oldest `SHORT_TERM_COMPRESS_FIRST_N` (default 4) messages. Summaries are stored with non-overlapping `message_range_start` / `message_range_end` so reloading skips already-summarised messages and never creates duplicates.
 
 ```mermaid
 flowchart TD
-    Msg["New message — count > 10?"]
-    Msg -->|No| Window["Return last 10 messages"]
-    Msg -->|Yes| Compress["LiteLLM: memory_compression prompt\nresponse_format=MemoryCompressionOutput"]
-    Compress --> Replace["messages[0:4] → summary_msg + messages[4:]"]
-    Replace --> Persist["INSERT conversation_summaries"]
+    Check["Start of request:\ncount > 10 OR tokens > 80k?"]
+    Check -->|No| Window["Return last 10 messages\nto all agents"]
+    Check -->|Yes| Compress["LiteLLM: memory_compression prompt\nresponse_format=MemoryCompressionOutput\ncompress oldest 4 messages"]
+    Compress --> Replace["messages[0:4] → [summary_msg] + messages[4:]"]
+    Replace --> Persist["INSERT conversation_summaries\n(message_range_start, message_range_end)"]
     Persist --> SSE2["event: compacting → frontend banner"]
     Replace --> Window
 ```
 
 ### Long-Term (per user)
 
-After every response, an async fire-and-forget task extracts personal facts and preferences. Loaded at start of every query and injected into all agent contexts.
+After every response, an async fire-and-forget task evaluates the exchange against **existing** LTM and extracts only new or corrected fields. Null-safe merge: existing values are never overwritten with null or empty.
+
+Injected as a `system` message into every Dynamic Agent and the Composer Agent — not just a template variable — so agents cannot claim they "don't know" a fact that is present in LTM.
 
 ```mermaid
-flowchart LR
-    Response["Assistant response done"] --> Task["asyncio.create_task\nfire-and-forget"]
-    Task --> LLM2["LiteLLM: long_term_memory_extraction\nresponse_format=LongTermMemoryExtraction"]
-    LLM2 -->|should_store=false| NoOp["Skip"]
-    LLM2 -->|should_store=true| Upsert["UPSERT user_long_term_memory\ncritical_facts + preferences"]
-    Upsert --> NextQuery["Available in all agents\nnext conversation"]
+flowchart TD
+    Response["Assistant response done"] --> Task["asyncio.create_task — fire-and-forget"]
+    Task --> LLM2["LiteLLM: long_term_memory_extraction\nexisting_ltm passed in prompt\nresponse_format=LongTermMemoryExtraction"]
+    LLM2 -->|should_store=false| NoOp["Skip — nothing new this turn"]
+    LLM2 -->|should_store=true| Merge["Null-safe merge:\nonly fields_to_update + preferences_to_update\nskip null / empty / unchanged values"]
+    Merge --> Upsert["UPSERT user_long_term_memory"]
+    Upsert --> NextQuery["Injected as system message\ninto Master + Composer + all Dynamic agents\nnext conversation"]
 ```
+
+**Valid LTM fields:**
+
+| Bucket | Fields |
+|--------|--------|
+| `critical_facts` | `name`, `company`, `role`, `location`, `projects` |
+| `preferences` | `tone`, `detail_level`, `language` |
 
 ---
 
@@ -1096,6 +1223,11 @@ Reusing `access_token` as the param name for connection strings means zero chang
 | `GET` | `/workspaces/{id}` | |
 | `PUT` | `/workspaces/{id}` | |
 | `DELETE` | `/workspaces/{id}` | Soft delete |
+| `POST` | `/workspaces/{id}/embed/enable` | Generate embed token + return iframe snippet |
+| `DELETE` | `/workspaces/{id}/embed` | Disable embed (token preserved, re-enable restores same URL) |
+| `PATCH` | `/workspaces/{id}/embed` | Update `embed_hitl_auto_approve` and/or `embed_disable_on_budget` |
+| `GET` | `/workspaces/{id}/stats` | `{conversation_count, message_count, total_cost_usd}` |
+| `GET` | `/workspaces/{id}/conversations` | `?limit=&offset=` — owner views all conversations + per-conversation cost |
 
 ### Agents — `/agents`
 
@@ -1279,6 +1411,10 @@ erDiagram
         UUID id PK
         UUID user_id FK
         VARCHAR name
+        VARCHAR embed_token UK
+        BOOL embed_enabled
+        BOOL embed_hitl_auto_approve
+        BOOL embed_disable_on_budget
         TIMESTAMPTZ deleted_at
     }
 
@@ -1563,13 +1699,21 @@ All LLM calls and Redis operations use `tenacity`. Settings from `config/setting
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `SHORT_TERM_MEMORY_WINDOW` | `10` | Sliding window size |
-| `SHORT_TERM_COMPRESS_FIRST_N` | `4` | Messages compressed when full |
+| `SHORT_TERM_MEMORY_WINDOW` | `10` | Max messages in sliding window |
+| `SHORT_TERM_COMPRESS_FIRST_N` | `4` | Messages compressed per compression run |
+| `SHORT_TERM_COMPRESS_TOKEN_THRESHOLD` | `80000` | Token count that triggers compression early (before window fills) |
+| `COMPOSER_AGENT_OUTPUT_MAX_CHARS` | `8000` | Max chars per agent output passed to Composer (prevents context overflow) |
 | `ENABLE_SUGGESTIONS` | `true` | Follow-up question chips |
 | `HITL_TIMEOUT_SECONDS` | `120` | Auto-deny HITL after |
 | `TOKEN_BUDGET_ENABLED` | `true` | Daily/monthly limits |
 | `USER_DAILY_TOKEN_BUDGET` | `100000` | Per-user daily limit |
 | `USER_MONTHLY_TOKEN_BUDGET` | `2000000` | Per-user monthly limit |
+
+### Embed
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `EMBED_RATE_LIMIT_PER_HOUR` | `50` | Max requests per embed token per IP per hour |
 
 ### Storage (B2 / S3)
 
@@ -1602,7 +1746,7 @@ metadata={"trace_name": "dynamic_agent_ResearchAgent", "trace_session_id": str(c
 cortex_app/
 ├── app/
 │   ├── auth/                   # JWT auth, argon2 hashing, RBAC
-│   ├── workspaces/             # Workspace CRUD
+│   ├── workspaces/             # Workspace CRUD + embed management + stats
 │   ├── agents/                 # Agent CRUD + AI prompt generator + KB/WC junction
 │   ├── connectors/             # OAuth flow, AES-256 token encryption
 │   ├── api_keys/               # LiteLLM key management, provider detection
@@ -1610,6 +1754,7 @@ cortex_app/
 │   ├── chat/                   # Conversations, messages, HITL, SSE streaming
 │   ├── knowledge_bases/        # KB CRUD, document management
 │   ├── website_collections/    # WC CRUD, URL management, scrape triggers
+│   ├── embed/                  # Public embed endpoints — no JWT auth, token IS credential
 │   ├── admin/                  # Admin 21-table data explorer + PATCH /users/{id}
 │   └── common/                 # api_response, exceptions, middleware, redis_client
 ├── core/
@@ -1648,8 +1793,10 @@ cortex_app/
 ├── frontend/
 │   ├── auth.html               # Login / register
 │   ├── index.html              # Workspace card grid
-│   ├── workspace.html          # Agent builder + KB/WC pickers
+│   ├── workspace.html          # Agent builder + KB/WC pickers + Embed modal + Dashboard link
 │   ├── chat.html               # SSE chat + HITL popup + artifact save + scroll pagination
+│   ├── embed.html              # Public embeddable chat (no auth — served at /embed/<token>)
+│   ├── workspace-dashboard.html # Per-workspace analytics: stats cards + conversation history
 │   ├── knowledge-bases.html    # Two-panel KB manager + SSE status
 │   ├── website-collections.html # Two-panel WC manager + SSE status
 │   ├── dashboard.html          # User dashboard: 8 stat cards, recent convs, connectors, workspaces, personas
@@ -1660,7 +1807,8 @@ cortex_app/
 │       ├── v002_knowledge_bases.py
 │       ├── v003_website_collections.py
 │       ├── v004_message_artifacts.py
-│       └── v005_connector_token_expiry.py
+│       ├── v005_connector_token_expiry.py
+│       └── v011_workspace_embed.py      # embed_token, embed_enabled, embed_hitl_auto_approve, embed_disable_on_budget
 ├── main.py                     # FastAPI app, lifespan, router registration
 ├── celery_app.py               # Celery app: document_pipeline + web_pipeline tasks
 ├── seed_langfuse.py            # One-time prompt seeding
