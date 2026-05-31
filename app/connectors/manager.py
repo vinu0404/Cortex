@@ -84,7 +84,41 @@ _CONNECTOR_DEFINITIONS = [
             {"name": "mongodb_query",  "description": "Run a MongoDB aggregation pipeline",      "requires_hitl": False},
         ],
     },
+    {
+        "slug": "__kb__",
+        "display_name": "Knowledge Base Search",
+        "auth_type": "internal",
+        "icon": "📚",
+        "tools": [
+            {"name": "knowledge_base_search", "description": "Search knowledge base documents for relevant information", "requires_hitl": False},
+        ],
+    },
+    {
+        "slug": "__website__",
+        "display_name": "Website Collection Search",
+        "auth_type": "internal",
+        "icon": "🌐",
+        "tools": [
+            {"name": "collection_search", "description": "Search scraped website collections for relevant information", "requires_hitl": False},
+        ],
+    },
 ]
+
+
+def get_auth_free_connector_slugs() -> frozenset[str]:
+    """Slugs that never require user authentication (internal + apikey auth types)."""
+    return frozenset(
+        d["slug"] for d in _CONNECTOR_DEFINITIONS
+        if d.get("auth_type") in ("internal", "apikey")
+    )
+
+
+def get_connector_display(slug: str) -> dict[str, str]:
+    """Return display_name and icon for a connector slug, or sensible defaults."""
+    for d in _CONNECTOR_DEFINITIONS:
+        if d["slug"] == slug:
+            return {"display_name": d["display_name"], "icon": d.get("icon", "🔌")}
+    return {"display_name": slug, "icon": "🔌"}
 
 
 def _save_token_expiry(instance: ConnectorInstance, tokens: dict) -> None:

@@ -259,14 +259,14 @@
     // Build model list grouped by key
     allModels = (keys || []).map(k => ({ key_id: k.id, key_name: k.key_name, provider: k.provider, models: k.available_models }));
 
-    // Build available tools: oauth2 from connected instances + apikey always available
+    // Build available tools: oauth2 from connected instances + apikey/internal always available
     allTools = [];
     for (const inst of allInstances) {
       const def = (defs || []).find(d => d.slug === inst.slug);
       if (def) def.tools.forEach(t => allTools.push({ ...t, connector_slug: inst.slug }));
     }
     for (const def of (defs || [])) {
-      if (def.auth_type === 'apikey') {
+      if (def.auth_type === 'apikey' || def.auth_type === 'internal') {
         def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
       }
     }
@@ -288,7 +288,7 @@
       if (def) def.tools.forEach(t => allTools.push({ ...t, connector_slug: inst.slug }));
     }
     for (const def of (defs || [])) {
-      if (def.auth_type === 'apikey') {
+      if (def.auth_type === 'apikey' || def.auth_type === 'internal') {
         def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
       }
     }
@@ -447,7 +447,7 @@
       const data = await apiPost(`workspaces/${wsId}/agents/prompt-generate?api_key_id=${api_key_id}`, { user_description: desc });
       document.getElementById('agent-prompt').value = data.generated_prompt;
       // Pre-check recommended tools
-      document.querySelectorAll('#tool-picker input').forEach(cb => {
+      document.querySelectorAll('#tool-picker input[data-tool]').forEach(cb => {
         const t = JSON.parse(cb.dataset.tool);
         if (data.recommended_tools?.some(r => r.tool === t.name && r.connector_slug === t.connector_slug)) cb.checked = true;
       });
@@ -469,11 +469,29 @@
     if (agent.model_id && agent.api_key_id) {
       document.getElementById('agent-model').value = JSON.stringify({ model_id: agent.model_id, api_key_id: agent.api_key_id });
     }
+    const allToolKeys = new Set(allTools.map(t => `${t.connector_slug}.${t.name}`));
     agent.tools_config?.forEach(tc => {
-      document.querySelectorAll('#tool-picker input').forEach(cb => {
+      const key = `${tc.connector_slug}.${tc.tool}`;
+      let matched = false;
+      document.querySelectorAll('#tool-picker input[data-tool]').forEach(cb => {
         const t = JSON.parse(cb.dataset.tool);
-        if (t.name === tc.tool && t.connector_slug === tc.connector_slug) cb.checked = true;
+        if (t.name === tc.tool && t.connector_slug === tc.connector_slug) { cb.checked = true; matched = true; }
       });
+      if (!matched) {
+        // Connector not connected — show as disabled ghost so user knows it's assigned
+        const container = document.getElementById('tool-picker');
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid #fde68a;border-radius:4px;font-size:12px;background:#fefce8;color:var(--text-muted);';
+        label.title = 'Connector not connected — connect it to use this tool';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.disabled = true;
+        cb.dataset.ghostTool = JSON.stringify({ tool: tc.tool, connector_slug: tc.connector_slug, requires_hitl: !!tc.requires_hitl });
+        label.prepend(cb);
+        label.append(` ${esc(tc.connector_slug)}.${esc(tc.tool)} ⚠️`);
+        container.appendChild(label);
+      }
     });
     (agent.kb_ids || []).forEach(kbId => {
       const cb = document.querySelector(`#kb-picker input[data-kb-id="${kbId}"]`);
@@ -492,9 +510,10 @@
     const modelVal = document.getElementById('agent-model').value;
     if (!name) { toast('Agent name required', 'error'); return; }
 
-    const tools_config = getSelectedTools().map(t => ({
-      tool: t.name, connector_slug: t.connector_slug, requires_hitl: !!t.requires_hitl
-    }));
+    const tools_config = [
+      ...getSelectedTools().map(t => ({ tool: t.name, connector_slug: t.connector_slug, requires_hitl: !!t.requires_hitl })),
+      ...Array.from(document.querySelectorAll('#tool-picker input[data-ghost-tool]')).map(cb => JSON.parse(cb.dataset.ghostTool)),
+    ];
     const kb_ids = getSelectedKbIds();
     const collection_ids = getSelectedCollectionIds();
 
@@ -586,7 +605,7 @@
     const connectedMap = Object.fromEntries(instances.map(i => [i.slug, i]));
     el.innerHTML = defs.map(d => {
       let actionHtml;
-      if (d.auth_type === 'apikey') {
+      if (d.auth_type === 'apikey' || d.auth_type === 'internal') {
         actionHtml = '<span class="badge" style="color:var(--accent,#6366f1);">Built-in</span>';
       } else if (connectedMap[d.slug]) {
         const inst = connectedMap[d.slug];

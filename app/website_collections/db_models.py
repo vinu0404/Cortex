@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, PrimaryKeyConstraint, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +20,9 @@ class WcCrawlStatusEnum(str, enum.Enum):
 
 class WebsiteCollection(Base):
     __tablename__ = "website_collections"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_website_collections_user_name"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(

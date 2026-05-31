@@ -119,7 +119,7 @@
   requireAuth();
 
   let collections = [];
-  let activeWcId = null;
+  let activeWcId = new URLSearchParams(location.search).get('id') || null;
   let urls = [];
   let sseSource = null;
 

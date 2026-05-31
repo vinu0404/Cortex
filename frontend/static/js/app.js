@@ -148,7 +148,16 @@ async function* sseStream(path, body) {
     body: JSON.stringify(body),
   });
 
-  if (!resp.ok) { throw new Error(`SSE failed: ${resp.status}`); }
+  if (!resp.ok) {
+    if (resp.status === 401) { clearTokens(); redirectToAuth(); return; }
+    let msg = `Request failed (${resp.status})`;
+    try {
+      const err = await resp.json();
+      if (err.message) msg = err.message;
+      else if (err.detail) msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
+    } catch {}
+    throw new Error(msg);
+  }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["dev", "prod"] = "dev"
 
     # --- LLM ---
-    DEFAULT_MODEL: str = "gpt-4o"
+    DEFAULT_MODEL: str = "gpt-5"
 
     # --- Database ---
     DATABASE_URL: str = "postgresql+asyncpg://cortex:cortex@localhost:5432/cortex"
@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     SHORT_TERM_COMPRESS_FIRST_N: int = 4
     SHORT_TERM_COMPRESS_TOKEN_THRESHOLD: int = 80_000
     COMPOSER_AGENT_OUTPUT_MAX_CHARS: int = 8_000
+
+    # --- Vinu ---
+    VINU_MEMORY_WINDOW: int = 15
+    VINU_COMPRESS_FIRST_N: int = 4
+    VINU_COMPRESS_TOKEN_THRESHOLD: int = 80_000
 
     # --- Features ---
     ENABLE_SUGGESTIONS: bool = True

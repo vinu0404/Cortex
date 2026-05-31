@@ -46,7 +46,9 @@ class MemoryManager:
         if not self.needs_compression():
             return None
 
-        to_compress = self._messages[:settings.SHORT_TERM_COMPRESS_FIRST_N]
+        non_system = [m for m in self._messages if m["role"] != "system"]
+        to_compress = non_system[:settings.SHORT_TERM_COMPRESS_FIRST_N]
+        keep = non_system[settings.SHORT_TERM_COMPRESS_FIRST_N:]
         messages_text = "\n".join(
             f"{m['role'].upper()}: {m['content'][:300]}" for m in to_compress
         )
@@ -65,7 +67,7 @@ class MemoryManager:
 
             self._messages = (
                 [{"role": "system", "content": f"[Summary] {summary}"}]
-                + self._messages[settings.SHORT_TERM_COMPRESS_FIRST_N:]
+                + keep
             )
             return summary
         except Exception:

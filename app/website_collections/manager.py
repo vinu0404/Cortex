@@ -2,6 +2,7 @@ import logging
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
@@ -50,7 +51,11 @@ class WebsiteCollectionManager:
     async def create_collection(self, user_id: UUID, name: str, description: str | None) -> WebsiteCollection:
         wc = WebsiteCollection(user_id=user_id, name=name, description=description)
         self._db.add(wc)
-        await self._db.flush()
+        try:
+            await self._db.flush()
+        except IntegrityError as e:
+            await self._db.rollback()
+            raise ConflictError(f'A website collection named "{name}" already exists.') from e
         return wc
 
     async def delete_collection(self, collection_id: UUID, user_id: UUID) -> None:

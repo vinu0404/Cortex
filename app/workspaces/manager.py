@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.exceptions import ForbiddenError, NotFoundError
+from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.workspaces.db_models import Workspace
 from app.workspaces.models import WorkspaceEmbedResponse
 
@@ -45,10 +46,21 @@ class WorkspaceManager:
         result = await self._db.scalars(query)
         return list(result)
 
+    async def find_by_name(self, user_id: UUID, name: str) -> Workspace | None:
+        return await self._db.scalar(
+            select(Workspace).where(
+                and_(Workspace.user_id == user_id, Workspace.name == name, Workspace.deleted_at.is_(None))
+            )
+        )
+
     async def create_workspace(self, user_id: UUID, name: str, description: str | None) -> Workspace:
         workspace = Workspace(user_id=user_id, name=name, description=description)
         self._db.add(workspace)
-        await self._db.flush()
+        try:
+            await self._db.flush()
+        except IntegrityError as e:
+            await self._db.rollback()
+            raise ConflictError(f'A workspace named "{name}" already exists.') from e
         await self._create_system_agents(workspace)
         return workspace
 
