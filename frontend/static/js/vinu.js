@@ -40,7 +40,21 @@ function _vinuApplyWidth(w) {
 async function toggleVinu() {
   vinuOpen = !vinuOpen;
   const sidebar = document.getElementById('vinu-sidebar');
+  const backdrop = document.getElementById('vinu-backdrop');
   sidebar.style.right = vinuOpen ? '0' : `-${vinuSidebarWidth + 20}px`;
+  if (backdrop) {
+    if (vinuOpen) {
+      backdrop.style.display = 'block';
+      requestAnimationFrame(() => {
+        backdrop.style.background = 'rgba(0,0,0,0.28)';
+        backdrop.style.backdropFilter = 'blur(3px)';
+      });
+    } else {
+      backdrop.style.background = 'rgba(0,0,0,0)';
+      backdrop.style.backdropFilter = 'blur(0px)';
+      setTimeout(() => { backdrop.style.display = 'none'; }, 260);
+    }
+  }
   if (vinuOpen && vinuView === 'list') {
     await _vinuLoadSettings();
   }
@@ -62,9 +76,21 @@ async function _vinuLoadSettings() {
 }
 
 function _vinuUpdateTitle() {
-  const el = document.getElementById('vinu-title');
-  if (el) el.textContent = vinuAgentName || 'Vinu';
+  const name = vinuAgentName || 'Vinu';
+  const title = document.getElementById('vinu-title');
+  if (title) title.textContent = name;
+  const btn = document.getElementById('vinu-toggle-btn');
+  if (btn) btn.textContent = name;
 }
+
+// Fetch name on page load so nav button shows correct name immediately
+(async function _vinuPrefetchName() {
+  try {
+    const data = await apiGet('vinu/settings');
+    vinuAgentName = data.vinu_agent_name || null;
+    _vinuUpdateTitle();
+  } catch {}
+})();
 
 // ---------------------------------------------------------------------------
 // Views
@@ -249,7 +275,7 @@ function _vinuBuildMsgEl(role, content) {
   wrap.className = `vinu-msg ${role}`;
   const avatar = document.createElement('div');
   avatar.className = 'vinu-msg-avatar';
-  avatar.textContent = role === 'assistant' ? '✨' : '👤';
+  avatar.textContent = role === 'assistant' ? 'V' : 'U';
   const body = document.createElement('div');
   body.className = 'vinu-msg-body';
   if (content) {
@@ -440,7 +466,7 @@ function _vinuPlanCardHTML(plan, buildResult) {
     <div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:6px;">
       <div style="font-weight:600;font-size:12px;">${_vesc(a.name)}</div>
       <div style="color:var(--text-muted);font-size:11px;margin:2px 0;">${_vesc(a.role || '')}</div>
-      ${a.why ? `<div style="font-size:11px;color:var(--text-muted);font-style:italic;margin:2px 0 4px;">💡 ${_vesc(a.why)}</div>` : ''}
+      ${a.why ? `<div style="font-size:11px;color:var(--text-muted);font-style:italic;margin:2px 0 4px;">${_vesc(a.why)}</div>` : ''}
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">
         ${(a.tools || []).map(t => `<span class="badge">${_vesc(t)}</span>`).join('')}
         ${a.model ? `<span class="badge" style="background:var(--accent-light);color:var(--accent);">${_vesc(a.model)}</span>` : ''}
@@ -449,33 +475,33 @@ function _vinuPlanCardHTML(plan, buildResult) {
 
   const kbs = (plan.kbs_needed || []).map(k =>
     `<div style="font-size:11px;padding:4px 8px;background:var(--surface);border-radius:4px;margin-bottom:3px;">
-      📁 <strong>${_vesc(k.name)}</strong> <span style="color:var(--text-muted);">— upload docs</span>
-      ${k.why ? `<div style="color:var(--text-muted);font-style:italic;margin-top:2px;">💡 ${_vesc(k.why)}</div>` : ''}
+      <strong>${_vesc(k.name)}</strong> <span style="color:var(--text-muted);">— upload docs after build</span>
+      ${k.why ? `<div style="color:var(--text-muted);font-style:italic;margin-top:2px;">${_vesc(k.why)}</div>` : ''}
     </div>`
   ).join('');
 
   const wcs = (plan.wcs_needed || []).map(w =>
     `<div style="font-size:11px;padding:4px 8px;background:var(--surface);border-radius:4px;margin-bottom:3px;">
-      🌐 <strong>${_vesc(w.name)}</strong>${w.url ? ` <span style="color:var(--text-muted);">(${_vesc(w.url)})</span>` : ''} <span style="color:var(--text-muted);">— add URLs after build</span>
-      ${w.why ? `<div style="color:var(--text-muted);font-style:italic;margin-top:2px;">💡 ${_vesc(w.why)}</div>` : ''}
+      <strong>${_vesc(w.name)}</strong>${w.url ? ` <span style="color:var(--text-muted);">(${_vesc(w.url)})</span>` : ''} <span style="color:var(--text-muted);">— add URLs after build</span>
+      ${w.why ? `<div style="color:var(--text-muted);font-style:italic;margin-top:2px;">${_vesc(w.why)}</div>` : ''}
     </div>`
   ).join('');
 
   const actions = buildResult
     ? `<div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
-        <span style="font-size:12px;color:#065f46;font-weight:600;">✅ Already built</span>
-        ${buildResult.workspace_id ? `<a href="/workspace.html?id=${encodeURIComponent(buildResult.workspace_id)}" class="btn btn-primary btn-sm" style="flex:1;text-align:center;">Open Workspace →</a>` : ''}
+        <span style="font-size:12px;color:var(--text-muted);font-weight:600;">Built</span>
+        ${buildResult.workspace_id ? `<a href="/workspace.html?id=${encodeURIComponent(buildResult.workspace_id)}" class="btn btn-primary btn-sm" style="flex:1;text-align:center;">Open Workspace</a>` : ''}
       </div>
       ${_vinuBuildActionCards(buildResult)}`
     : `<div style="display:flex;gap:8px;margin-top:12px;">
-        <button onclick="buildVinuWorkspace()" class="btn btn-primary btn-sm" style="flex:1;">🚀 Build Workspace</button>
-        <button onclick="sendVinuMessage('Please refine the plan.')" class="btn btn-secondary btn-sm">✏ Tweak</button>
+        <button onclick="buildVinuWorkspace()" class="btn btn-primary btn-sm" style="flex:1;">Build Workspace</button>
+        <button onclick="sendVinuMessage('Please refine the plan.')" class="btn btn-secondary btn-sm">Tweak</button>
       </div>`;
 
   return `
-    <div style="font-size:13px;font-weight:700;margin-bottom:4px;">📋 ${_vesc(plan.workspace_name || 'Workspace Plan')}</div>
+    <div style="font-size:13px;font-weight:700;margin-bottom:4px;letter-spacing:-.02em;">${_vesc(plan.workspace_name || 'Workspace Plan')}</div>
     <div style="color:var(--text-muted);font-size:12px;margin-bottom:4px;">${_vesc(plan.workspace_description || '')}</div>
-    ${plan.plan_reasoning ? `<div style="font-size:11px;padding:6px 8px;background:#f0f9ff;border-left:3px solid var(--accent);border-radius:2px;margin-bottom:10px;color:var(--text-muted);">🧠 ${_vesc(plan.plan_reasoning)}</div>` : '<div style="margin-bottom:10px;"></div>'}
+    ${plan.plan_reasoning ? `<div style="font-size:11px;padding:6px 8px;background:var(--surface);border-left:2px solid var(--accent);border-radius:2px;margin-bottom:10px;color:var(--text-muted);">${_vesc(plan.plan_reasoning)}</div>` : '<div style="margin-bottom:10px;"></div>'}
     ${agents}
     ${kbs || wcs ? `<div style="margin-top:8px;">${kbs}${wcs}</div>` : ''}
     ${actions}`;
@@ -489,8 +515,8 @@ function _vinuBuildActionCards(buildResult) {
     html += `<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Agents Built</div>`;
     html += buildResult.agents_summary.map(a => {
       const toolBadges = (a.tools || []).map(t => `<span class="badge" style="font-size:10px;">${_vesc(t)}</span>`).join('');
-      const kbBadges = (a.kb_names || []).map(n => `<span class="badge" style="font-size:10px;background:#fef9c3;color:#854d0e;">📁 ${_vesc(n)}</span>`).join('');
-      const wcBadges = (a.wc_names || []).map(n => `<span class="badge" style="font-size:10px;background:#e0f2fe;color:#0369a1;">🌐 ${_vesc(n)}</span>`).join('');
+      const kbBadges = (a.kb_names || []).map(n => `<span class="badge" style="font-size:10px;">KB: ${_vesc(n)}</span>`).join('');
+      const wcBadges = (a.wc_names || []).map(n => `<span class="badge" style="font-size:10px;">WC: ${_vesc(n)}</span>`).join('');
       return `<div style="padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px;">
         <div style="font-weight:600;font-size:11px;">${_vesc(a.name)}</div>
         ${a.role ? `<div style="color:var(--text-muted);font-size:10px;margin-bottom:3px;">${_vesc(a.role)}</div>` : ''}
@@ -503,11 +529,11 @@ function _vinuBuildActionCards(buildResult) {
   if (buildResult.kbs_created && buildResult.kbs_created.length) {
     html += `<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Upload Documents</div>`;
     html += buildResult.kbs_created.map(kb => `
-      <div style="padding:8px 10px;background:#fefce8;border:1px solid #fde68a;border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
-        <div style="font-weight:600;margin-bottom:2px;">📁 ${_vesc(kb.name)}</div>
+      <div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
+        <div style="font-weight:600;margin-bottom:2px;">${_vesc(kb.name)}</div>
         ${kb.description ? `<div style="color:var(--text-muted);margin-bottom:4px;">${_vesc(kb.description)}</div>` : ''}
-        <div style="color:var(--text-muted);margin-bottom:4px;">Go to Knowledge Bases and upload your PDF, Word, Excel, or CSV files.</div>
-        <a href="/knowledge-bases.html?id=${encodeURIComponent(kb.id)}" style="color:var(--accent);font-weight:600;">Open Knowledge Base →</a>
+        <div style="color:var(--text-muted);margin-bottom:4px;">Upload your PDF, Word, Excel, or CSV files to this knowledge base.</div>
+        <a href="/knowledge-bases.html?id=${encodeURIComponent(kb.id)}" style="color:var(--accent);font-weight:600;text-decoration:underline;text-underline-offset:2px;">Open Knowledge Base</a>
       </div>`).join('');
   }
 
@@ -515,11 +541,11 @@ function _vinuBuildActionCards(buildResult) {
   if (buildResult.wcs_created && buildResult.wcs_created.length) {
     html += `<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Add Website URLs</div>`;
     html += buildResult.wcs_created.map(wc => `
-      <div style="padding:8px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
-        <div style="font-weight:600;margin-bottom:2px;">🌐 ${_vesc(wc.name)}</div>
+      <div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
+        <div style="font-weight:600;margin-bottom:2px;">${_vesc(wc.name)}</div>
         ${wc.description ? `<div style="color:var(--text-muted);margin-bottom:4px;">${_vesc(wc.description)}</div>` : ''}
         <div style="color:var(--text-muted);margin-bottom:4px;">Add your website URL(s) and start the crawl — the agent will search this content.</div>
-        <a href="/website-collections.html?id=${encodeURIComponent(wc.id)}" style="color:var(--accent);font-weight:600;">Open Website Collection →</a>
+        <a href="/website-collections.html?id=${encodeURIComponent(wc.id)}" style="color:var(--accent);font-weight:600;text-decoration:underline;text-underline-offset:2px;">Open Web Collection</a>
       </div>`).join('');
   }
 
@@ -527,10 +553,10 @@ function _vinuBuildActionCards(buildResult) {
   if (buildResult.connectors_needed && buildResult.connectors_needed.length) {
     html += `<div style="margin-top:10px;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Connect Required Services</div>`;
     html += buildResult.connectors_needed.map(c => `
-      <div style="padding:8px 10px;background:#fdf4ff;border:1px solid #e9d5ff;border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
-        <div style="font-weight:600;margin-bottom:2px;">${_vesc(c.icon || '🔌')} ${_vesc(c.display_name)}</div>
-        <div style="color:var(--text-muted);margin-bottom:4px;">This connector needs authentication before your agents can use it.</div>
-        <span style="color:var(--accent);font-weight:600;">Workspace → Connectors → Connect ${_vesc(c.display_name)}</span>
+      <div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:11px;margin-bottom:4px;">
+        <div style="font-weight:600;margin-bottom:2px;">${_vesc(c.display_name)}</div>
+        <div style="color:var(--text-muted);margin-bottom:4px;">Needs authentication before your agents can use it.</div>
+        <span style="color:var(--accent);font-weight:600;">Workspace &rsaquo; Connectors &rsaquo; Connect ${_vesc(c.display_name)}</span>
       </div>`).join('');
   }
 

@@ -15,7 +15,7 @@
 </head>
 <body>
 
-<nav style="border-bottom:1px solid var(--border); padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+<nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
   <div style="display:flex; align-items:center; gap:12px;">
     <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
     <span style="color:var(--border);">|</span>
@@ -39,7 +39,6 @@
       <!-- Master (pinned) -->
       <div class="agent-card system">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-          <span style="font-size:18px;">🧠</span>
           <span style="font-weight:600;">Master Agent</span>
           <span class="badge">System</span>
         </div>
@@ -334,8 +333,8 @@
         </div>
         ${agent.system_prompt ? `<p style="color:var(--text-muted); font-size:12px; line-height:1.5;">${esc(agent.system_prompt.slice(0, 120))}${agent.system_prompt.length > 120 ? '…' : ''}</p>` : ''}
         ${agent.tools_config?.length ? `<div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">${agent.tools_config.map(t => `<span class="badge">${esc(t.tool)}${t.requires_hitl ? ' 🔒' : ''}</span>`).join('')}</div>` : ''}
-        ${agent.kb_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.kb_ids.map(kbId => { const kb = allKbs.find(k => k.id === kbId); return kb ? `<span class="badge" style="background:rgba(99,102,241,.12);color:#6366f1;">📚 ${esc(kb.name)}</span>` : ''; }).join('')}</div>` : ''}
-        ${agent.collection_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.collection_ids.map(cid => { const wc = allWcs.find(w => w.id === cid); return wc ? `<span class="badge" style="background:rgba(16,185,129,.12);color:#059669;">🌐 ${esc(wc.name)}</span>` : ''; }).join('')}</div>` : ''}`;
+        ${agent.kb_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.kb_ids.map(kbId => { const kb = allKbs.find(k => k.id === kbId); return kb ? `<span class="badge">KB: ${esc(kb.name)}</span>` : ''; }).join('')}</div>` : ''}
+        ${agent.collection_ids?.length ? `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${agent.collection_ids.map(cid => { const wc = allWcs.find(w => w.id === cid); return wc ? `<span class="badge">WC: ${esc(wc.name)}</span>` : ''; }).join('')}</div>` : ''}`;
       container.appendChild(div);
     });
   }
