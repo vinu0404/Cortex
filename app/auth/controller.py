@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user, _bearer
 from app.auth.db_models import User
 from app.auth.manager import AuthManager
-from app.auth.models import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse, UserResponse
+from app.auth.models import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse, UserResponse, UserUpdate
 from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.common.redis_client import get_async_redis
@@ -84,6 +84,24 @@ async def logout(
 @router.get("/me", response_model=None)
 async def me(current_user: User = Depends(get_current_user)) -> JSONResponse:
     return ok(UserResponse.model_validate(current_user).model_dump(mode="json"))
+
+
+@router.patch("/me", response_model=None)
+async def update_me(
+    body: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        if body.timezone is not None:
+            current_user.timezone = body.timezone
+        if body.vinu_agent_name is not None:
+            current_user.vinu_agent_name = body.vinu_agent_name
+        await db.commit()
+        await db.refresh(current_user)
+        return ok(UserResponse.model_validate(current_user).model_dump(mode="json"))
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
 
 
 @router.get("/me/stats", response_model=None)

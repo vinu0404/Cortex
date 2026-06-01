@@ -28,7 +28,11 @@
     <span style="color:var(--border);">|</span>
     <span style="font-weight:600; font-size:15px;">Website Collections</span>
   </div>
-  <button onclick="showModal('modal-create-wc')" class="btn btn-primary">+ New Collection</button>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
+    <div class="nav-divider"></div>
+    <button onclick="showModal('modal-create-wc')" class="btn btn-primary">+ New Collection</button>
+  </div>
 </nav>
 
 <div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
@@ -292,7 +296,7 @@
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
         <h2 style="font-size:16px; font-weight:600;">${esc(wc.name)}</h2>
         <div style="display:flex; gap:8px;">
-          <button onclick="scrapeAll()" class="btn btn-secondary btn-sm">Scrape All</button>
+          <button onclick="scrapeAll()" class="btn btn-secondary btn-sm" ${urls.length ? '' : 'disabled title="No URLs to scrape"'}>Scrape All</button>
           <button onclick="reindexCollection('${wc.id}')" class="btn btn-secondary btn-sm" ${hasReindexable ? '' : 'disabled title="No failed or cancelled URLs to reindex"'}>Reindex all</button>
           <button onclick="showModal('modal-add-url')" class="btn btn-primary btn-sm">+ Add URL</button>
         </div>
@@ -514,6 +518,8 @@
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   loadCollections();
   startSse();
 </script>

@@ -24,6 +24,8 @@
   </div>
   <div style="display:flex; gap:8px; align-items:center;">
     <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
+    <div class="nav-divider"></div>
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
     <a id="admin-link" href="/admin.html" class="btn btn-secondary btn-sm hidden">Admin Panel</a>
   </div>
 </nav>
@@ -235,6 +237,8 @@
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   init();
 </script>
 </body>

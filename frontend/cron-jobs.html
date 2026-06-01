@@ -79,7 +79,7 @@
     </div>
 
     <!-- Phase 2: Streaming steps + plan card -->
-    <div id="phase-stream" class="hidden">
+    <div id="phase-stream" class="hidden" style="position:relative;">
       <div id="stream-steps" style="margin-bottom:8px;"></div>
       <div id="plan-card" class="hidden plan-card">
         <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-muted); letter-spacing:.04em; text-transform:uppercase; font-size:11px;">Your Cron Plan</div>
@@ -87,15 +87,52 @@
           <div><span style="color:var(--text-muted);">Schedule:</span> <strong id="plan-schedule"></strong></div>
           <div><span style="color:var(--text-muted);">Cron expr:</span> <code id="plan-cron" style="font-size:12px; background:var(--surface-2); padding:2px 6px; border-radius:4px;"></code> <span style="font-size:11px; color:var(--text-faint);">UTC</span></div>
           <div><span style="color:var(--text-muted);">Task:</span> <span id="plan-task"></span></div>
-          <div id="plan-agents-row" class="hidden"><span style="color:var(--text-muted);">Agents:</span> <span id="plan-agents"></span></div>
         </div>
+        <div id="plan-agent-cards" style="display:flex;flex-direction:column;gap:6px;margin-top:10px;"></div>
         <div id="plan-missing-tools" class="hidden" style="margin-top:12px; padding:10px 14px; background:#fff8f0; border:1px solid #f0c080; border-radius:var(--radius); font-size:13px; color:#8a5700; line-height:1.5;"></div>
+        <div id="plan-connectors" class="hidden" style="margin-top:8px; padding:10px 14px; background:#f0f4ff; border:1px solid #b0c4f8; border-radius:var(--radius); font-size:13px; color:#1e40af; line-height:1.5;"></div>
         <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
-          <button onclick="backToInput()" class="btn btn-secondary">Edit</button>
+          <button onclick="showEditPhase()" class="btn btn-secondary">Edit</button>
           <button onclick="createCronJob()" id="create-btn" class="btn btn-primary">Accept &amp; Create</button>
         </div>
       </div>
       <div id="stream-error" class="hidden" style="color:var(--danger); font-size:13px; margin-top:8px;"></div>
+    </div>
+
+    <!-- Phase 3: Edit Plan -->
+    <div id="phase-edit" class="hidden">
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div class="form-group">
+          <label>Job Name</label>
+          <input id="edit-name" class="input" placeholder="Daily Email Summary">
+        </div>
+        <div class="form-group">
+          <label>Schedule</label>
+          <input id="edit-human-schedule" class="input" placeholder="Daily at 9 AM IST">
+        </div>
+        <div class="form-group">
+          <label>Cron Expression <span style="font-size:11px; color:var(--text-faint);">UTC · 5 fields</span></label>
+          <input id="edit-cron-expr" class="input" placeholder="0 9 * * *" style="font-family:monospace;">
+        </div>
+        <div class="form-group">
+          <label>Timezone</label>
+          <select id="edit-tz" class="select" style="background:var(--bg);"></select>
+        </div>
+        <div class="form-group">
+          <label>Agents</label>
+          <div id="edit-agents-container" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+        <div class="form-group" style="border-top:1px solid var(--border);padding-top:12px;margin-top:2px;">
+          <label>Request AI changes <span style="font-size:11px;color:var(--text-faint);font-weight:400;">— describe what to add, remove, or adjust</span></label>
+          <textarea id="edit-refinement" class="input" rows="2" placeholder="e.g. add a Slack notification agent, split into separate search and email agents…" style="margin-top:4px;resize:vertical;" oninput="document.getElementById('refine-btn').disabled=!this.value.trim();"></textarea>
+          <button onclick="refineWithAI()" id="refine-btn" class="btn btn-secondary" style="margin-top:6px;width:100%;" disabled>Refine with AI</button>
+        </div>
+        <div id="edit-error" class="hidden" style="color:var(--danger); font-size:13px;"></div>
+        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px;">
+          <button onclick="cancelEdit()" class="btn btn-secondary">Cancel</button>
+          <button onclick="saveEdit()" class="btn btn-primary">Save Changes</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -143,7 +180,10 @@
               <span style="font-size:12px; color:var(--text-muted);">${j.is_active ? 'Active' : 'Paused'}</span>
             </span>
           </div>
-          <span class="badge">${esc(j.human_schedule)}</span>
+          <div style="text-align:right;">
+            <span class="badge">${esc(j.human_schedule)}</span>
+            <div style="margin-top:3px;"><code style="font-size:11px; color:var(--text-faint);">${esc(j.cron_expr)}</code> <span style="font-size:10px; color:var(--text-faint);">UTC</span></div>
+          </div>
         </div>
         <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
           ${j.last_run_at ? `Last run: ${_ago(j.last_run_at)} · ` : ''}
@@ -153,7 +193,7 @@
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
           <button onclick="runNow('${j.id}')" class="btn btn-secondary btn-sm">Run Now</button>
           <button onclick="toggleJob('${j.id}', ${!j.is_active})" class="btn btn-secondary btn-sm">${j.is_active ? 'Pause' : 'Resume'}</button>
-          <a href="/workspace.html?id=${j.workspace_id}" class="btn btn-secondary btn-sm">Open Workspace</a>
+          ${j.workspace_id ? `<a href="/workspace.html?id=${j.workspace_id}" class="btn btn-secondary btn-sm">Open Workspace</a>` : ''}
           <button onclick="deleteJob('${j.id}')" class="btn btn-danger btn-sm">Delete</button>
         </div>
       </div>`).join('');
@@ -181,6 +221,7 @@
     document.getElementById('cron-query').value = '';
     document.getElementById('phase-input').classList.remove('hidden');
     document.getElementById('phase-stream').classList.add('hidden');
+    document.getElementById('phase-edit').classList.add('hidden');
     document.getElementById('modal-title').textContent = 'New Cron Job';
     const cronTz = document.getElementById('cron-tz');
     if (cronTz) cronTz.value = _appTimezone;
@@ -188,8 +229,15 @@
   }
 
   function backToInput() {
+    if (_pendingPlan) {
+      document.getElementById('cron-name').value = _pendingPlan.name || '';
+      document.getElementById('cron-query').value = _pendingPlan.natural_query || '';
+    }
     document.getElementById('phase-input').classList.remove('hidden');
     document.getElementById('phase-stream').classList.add('hidden');
+    document.getElementById('stream-steps').innerHTML = '';
+    document.getElementById('plan-card').classList.add('hidden');
+    document.getElementById('stream-error').classList.add('hidden');
     document.getElementById('modal-title').textContent = 'New Cron Job';
   }
 
@@ -231,10 +279,7 @@
           document.getElementById('plan-schedule').textContent = data.human_schedule;
           document.getElementById('plan-cron').textContent = data.cron_expr;
           document.getElementById('plan-task').textContent = data.task_description;
-          if (data.agents?.length) {
-            document.getElementById('plan-agents').textContent = data.agents.map(a => `${a.name} (${(a.tools||[]).join(', ')||'no tools'})`).join(', ');
-            document.getElementById('plan-agents-row').classList.remove('hidden');
-          }
+          _renderPlanAgentCards(data.agents);
           const missingEl = document.getElementById('plan-missing-tools');
           if (data.missing_tools?.length && data.missing_tools_message) {
             missingEl.textContent = `⚠ ${data.missing_tools_message}`;
@@ -242,12 +287,21 @@
           } else {
             missingEl.classList.add('hidden');
           }
+          const connEl = document.getElementById('plan-connectors');
+          if (data.connectors_needed?.length) {
+            const names = data.connectors_needed.map(c => c.label || c.slug).join(', ');
+            connEl.textContent = `⚡ Connect these before the job runs: ${names}`;
+            connEl.classList.remove('hidden');
+          } else {
+            connEl.classList.add('hidden');
+          }
           document.getElementById('plan-card').classList.remove('hidden');
           document.getElementById('modal-title').textContent = 'Review Plan';
         } else if (event === 'error') {
           document.getElementById('stream-error').textContent = data.message;
           document.getElementById('stream-error').classList.remove('hidden');
-          document.getElementById('modal-title').textContent = 'Error';
+          document.getElementById('modal-title').textContent = 'Analyze';
+          break;
         }
       }
     } catch (err) {
@@ -286,7 +340,8 @@
   async function runNow(id) {
     try {
       await apiPost(`cron-jobs/${id}/run-now`, {});
-      toast('Dispatched — check workspace for results.');
+      toast('Dispatched — running now');
+      await loadJobs();
     } catch (err) { toast(err.message, 'error'); }
   }
 
@@ -309,10 +364,261 @@
     });
   }
 
+  function _renderPlanAgentCards(agents) {
+    const container = document.getElementById('plan-agent-cards');
+    if (!container) return;
+    container.innerHTML = '';
+    (agents || []).forEach(a => {
+      const div = document.createElement('div');
+      div.style.cssText = 'border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;';
+      const name = document.createElement('div');
+      name.style.cssText = 'font-weight:600;font-size:12px;';
+      name.textContent = a.name || '';
+      div.appendChild(name);
+      if (a.role) {
+        const role = document.createElement('div');
+        role.style.cssText = 'color:var(--text-muted);font-size:11px;margin:2px 0;';
+        role.textContent = a.role;
+        div.appendChild(role);
+      }
+      if (a.why) {
+        const why = document.createElement('div');
+        why.style.cssText = 'font-size:11px;color:var(--text-muted);font-style:italic;margin:2px 0 4px;';
+        why.textContent = a.why;
+        div.appendChild(why);
+      }
+      const badges = document.createElement('div');
+      badges.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;';
+      (a.tools || []).forEach(t => {
+        const b = document.createElement('span');
+        b.className = 'badge';
+        b.textContent = t;
+        badges.appendChild(b);
+      });
+      (a.kb_names || []).forEach(n => {
+        const b = document.createElement('span');
+        b.className = 'badge';
+        b.style.cssText = 'background:var(--accent-light);color:var(--accent);';
+        b.textContent = `KB: ${n}`;
+        badges.appendChild(b);
+      });
+      (a.wc_names || []).forEach(n => {
+        const b = document.createElement('span');
+        b.className = 'badge';
+        b.style.cssText = 'background:var(--accent-light);color:var(--accent);';
+        b.textContent = `WC: ${n}`;
+        badges.appendChild(b);
+      });
+      div.appendChild(badges);
+      if (a.system_prompt) {
+        const spSec = document.createElement('div');
+        spSec.style.cssText = 'margin-top:6px;border-top:1px solid var(--border);padding-top:5px;';
+        const spBtn = document.createElement('button');
+        spBtn.type = 'button';
+        spBtn.style.cssText = 'font-size:11px;color:var(--text-faint);background:none;border:none;cursor:pointer;padding:0;';
+        spBtn.textContent = '▶ System Prompt';
+        const spBody = document.createElement('div');
+        spBody.style.cssText = 'display:none;font-size:11px;color:var(--text-muted);white-space:pre-wrap;margin-top:6px;padding:6px 8px;background:var(--surface-2);border-radius:4px;line-height:1.5;';
+        spBody.textContent = a.system_prompt;
+        spBtn.onclick = () => {
+          const open = spBody.style.display !== 'none';
+          spBody.style.display = open ? 'none' : 'block';
+          spBtn.textContent = (open ? '▶' : '▼') + ' System Prompt';
+        };
+        spSec.appendChild(spBtn);
+        spSec.appendChild(spBody);
+        div.appendChild(spSec);
+      }
+      container.appendChild(div);
+    });
+  }
+
+  function _populateEditAgents(agents) {
+    const agContainer = document.getElementById('edit-agents-container');
+    agContainer.innerHTML = '';
+    agents.forEach((agent, i) => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;';
+
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'font-size:11px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;';
+      hdr.textContent = `Agent ${i + 1}`;
+      wrap.appendChild(hdr);
+
+      const nameWrap = document.createElement('div');
+      nameWrap.className = 'form-group';
+      nameWrap.style.margin = '0';
+      const nameLabel = document.createElement('label');
+      nameLabel.style.fontSize = '12px';
+      nameLabel.textContent = 'Name';
+      const nameInput = document.createElement('input');
+      nameInput.className = 'input edit-agent-name';
+      nameInput.dataset.idx = i;
+      nameInput.value = agent.name || '';
+      nameInput.style.cssText = 'font-size:13px;margin-top:3px;';
+      nameWrap.appendChild(nameLabel);
+      nameWrap.appendChild(nameInput);
+      wrap.appendChild(nameWrap);
+
+      const roleWrap = document.createElement('div');
+      roleWrap.className = 'form-group';
+      roleWrap.style.margin = '0';
+      const roleLabel = document.createElement('label');
+      roleLabel.style.fontSize = '12px';
+      roleLabel.textContent = 'Role';
+      const roleInput = document.createElement('textarea');
+      roleInput.className = 'input edit-agent-role';
+      roleInput.dataset.idx = i;
+      roleInput.value = agent.role || '';
+      roleInput.rows = 2;
+      roleInput.style.cssText = 'font-size:13px;margin-top:3px;resize:vertical;';
+      roleWrap.appendChild(roleLabel);
+      roleWrap.appendChild(roleInput);
+      wrap.appendChild(roleWrap);
+
+      if ((agent.tools || []).length) {
+        const toolNote = document.createElement('div');
+        toolNote.style.cssText = 'font-size:11px;color:var(--text-faint);';
+        toolNote.textContent = `Tools: ${agent.tools.join(', ')}`;
+        wrap.appendChild(toolNote);
+      }
+
+      const spSec = document.createElement('div');
+      spSec.style.cssText = 'border-top:1px solid var(--border);padding-top:6px;';
+      const spBtn = document.createElement('button');
+      spBtn.type = 'button';
+      spBtn.style.cssText = 'font-size:11px;color:var(--text-faint);background:none;border:none;cursor:pointer;padding:0;';
+      spBtn.textContent = '▶ System Prompt';
+      const spBody = document.createElement('div');
+      spBody.style.cssText = 'display:none;margin-top:6px;';
+      const spTA = document.createElement('textarea');
+      spTA.className = 'input edit-agent-system-prompt';
+      spTA.dataset.idx = i;
+      spTA.value = agent.system_prompt || '';
+      spTA.rows = 6;
+      spTA.style.cssText = 'font-size:12px;resize:vertical;line-height:1.5;';
+      spBtn.onclick = () => {
+        const open = spBody.style.display !== 'none';
+        spBody.style.display = open ? 'none' : 'block';
+        spBtn.textContent = (open ? '▶' : '▼') + ' System Prompt';
+      };
+      spBody.appendChild(spTA);
+      spSec.appendChild(spBtn);
+      spSec.appendChild(spBody);
+      wrap.appendChild(spSec);
+
+      agContainer.appendChild(wrap);
+    });
+  }
+
+  async function refineWithAI() {
+    const request = document.getElementById('edit-refinement').value.trim();
+    if (!request) return;
+    const btn = document.getElementById('refine-btn');
+    const errEl = document.getElementById('edit-error');
+    errEl.classList.add('hidden');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> Refining…';
+    try {
+      // Capture unsaved form edits so AI refines from user's latest state
+      document.querySelectorAll('.edit-agent-name').forEach(el => {
+        const i = parseInt(el.dataset.idx);
+        if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].name = el.value.trim();
+      });
+      document.querySelectorAll('.edit-agent-role').forEach(el => {
+        const i = parseInt(el.dataset.idx);
+        if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].role = el.value.trim();
+      });
+      document.querySelectorAll('.edit-agent-system-prompt').forEach(el => {
+        const i = parseInt(el.dataset.idx);
+        if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].system_prompt = el.value;
+      });
+      const data = await apiPost('cron-jobs/analyze/refine', {
+        natural_query: _pendingPlan.natural_query || '',
+        current_agents: _pendingPlan.agents || [],
+        change_request: request,
+        timezone: _pendingPlan.timezone || _appTimezone,
+      });
+      _pendingPlan.agents = data.agents || [];
+      if (data.task_description) _pendingPlan.task_description = data.task_description;
+      _populateEditAgents(_pendingPlan.agents);
+      document.getElementById('edit-refinement').value = '';
+      document.getElementById('refine-btn').disabled = true;
+    } catch (err) {
+      errEl.textContent = err.message || 'Refinement failed.';
+      errEl.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refine with AI';
+    }
+  }
+
+  function showEditPhase() {
+    if (!_pendingPlan) return;
+    document.getElementById('edit-name').value = _pendingPlan.name || '';
+    document.getElementById('edit-human-schedule').value = _pendingPlan.human_schedule || '';
+    document.getElementById('edit-cron-expr').value = _pendingPlan.cron_expr || '';
+    document.getElementById('edit-error').classList.add('hidden');
+    _populateTzSelect('edit-tz');
+    document.getElementById('edit-tz').value = _pendingPlan.timezone || _appTimezone;
+
+    _populateEditAgents(_pendingPlan.agents || []);
+
+    document.getElementById('phase-stream').classList.add('hidden');
+    document.getElementById('phase-edit').classList.remove('hidden');
+    document.getElementById('modal-title').textContent = 'Edit Plan';
+  }
+
+  function cancelEdit() {
+    document.getElementById('phase-edit').classList.add('hidden');
+    document.getElementById('phase-stream').classList.remove('hidden');
+    document.getElementById('modal-title').textContent = 'Review Plan';
+  }
+
+  function saveEdit() {
+    const name = document.getElementById('edit-name').value.trim();
+    const humanSchedule = document.getElementById('edit-human-schedule').value.trim();
+    const cronExpr = document.getElementById('edit-cron-expr').value.trim();
+    const tz = document.getElementById('edit-tz').value;
+    const errEl = document.getElementById('edit-error');
+    errEl.classList.add('hidden');
+
+    if (!name || !cronExpr || !humanSchedule) {
+      errEl.textContent = 'All fields required.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    if (cronExpr.split(' ').filter(Boolean).length !== 5) {
+      errEl.textContent = 'Cron expression must have 5 fields (e.g. 0 9 * * *).';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    _pendingPlan.name = name;
+    _pendingPlan.human_schedule = humanSchedule;
+    _pendingPlan.cron_expr = cronExpr;
+    _pendingPlan.timezone = tz;
+    document.querySelectorAll('.edit-agent-name').forEach(el => {
+      const i = parseInt(el.dataset.idx);
+      if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].name = el.value.trim();
+    });
+    document.querySelectorAll('.edit-agent-role').forEach(el => {
+      const i = parseInt(el.dataset.idx);
+      if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].role = el.value.trim();
+    });
+    document.querySelectorAll('.edit-agent-system-prompt').forEach(el => {
+      const i = parseInt(el.dataset.idx);
+      if (_pendingPlan.agents?.[i]) _pendingPlan.agents[i].system_prompt = el.value;
+    });
+    document.getElementById('plan-schedule').textContent = humanSchedule;
+    document.getElementById('plan-cron').textContent = cronExpr;
+    _renderPlanAgentCards(_pendingPlan.agents);
+    cancelEdit();
+  }
+
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   _populateTzSelect();
-  initTimezone().then(() => { _populateTzSelect(); _populateTzSelect('cron-tz'); });
+  initTimezone().then(() => { _populateTzSelect(); _populateTzSelect('cron-tz'); _populateTzSelect('edit-tz'); });
   init();
 </script>
 </body>

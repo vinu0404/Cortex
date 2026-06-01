@@ -31,6 +31,7 @@
     <span id="ws-name" style="font-weight:600; font-size:15px;"></span>
     <span style="font-size:13px; color:var(--text-muted);">Dashboard</span>
   </div>
+  <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
 </nav>
 
 <div style="max-width:900px; margin:0 auto; padding:24px;">
@@ -192,6 +193,8 @@
   function fmtNum(n) { return (n || 0).toLocaleString(); }
   function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   init();
 </script>
 </body>

@@ -22,6 +22,8 @@
     <span id="ws-name" style="font-weight:600; font-size:15px;"></span>
   </div>
   <div style="display:flex; gap:8px; align-items:center;">
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
+    <div class="nav-divider"></div>
     <button onclick="goDashboard()" class="btn btn-secondary btn-sm">Dashboard</button>
     <button id="embed-btn" onclick="openEmbedModal()" class="btn btn-secondary btn-sm">Embed ○</button>
     <button onclick="goChat()" class="btn btn-primary btn-sm">Open Chat →</button>
@@ -309,11 +311,23 @@
     populateModelSelect('composer-model');
     populateModelSelect('agent-model');
 
-    // Restore saved model selection for master/composer
+    // Restore saved model selection for master/composer; fall back to first available option
     const master = agents.find(a => a.agent_type === 'MASTER');
-    if (master?.model_id && master?.api_key_id) restoreModelSelect('master-model', master.model_id, master.api_key_id);
+    if (master?.model_id && master?.api_key_id) {
+      restoreModelSelect('master-model', master.model_id, master.api_key_id);
+    } else {
+      const sel = document.getElementById('master-model');
+      const first = sel && Array.from(sel.options).find(o => o.value);
+      if (first) sel.value = first.value;
+    }
     const composer = agents.find(a => a.agent_type === 'COMPOSER');
-    if (composer?.model_id && composer?.api_key_id) restoreModelSelect('composer-model', composer.model_id, composer.api_key_id);
+    if (composer?.model_id && composer?.api_key_id) {
+      restoreModelSelect('composer-model', composer.model_id, composer.api_key_id);
+    } else {
+      const sel = document.getElementById('composer-model');
+      const first = sel && Array.from(sel.options).find(o => o.value);
+      if (first) sel.value = first.value;
+    }
 
     const custom = agents.filter(a => a.agent_type === 'CUSTOM');
     custom.forEach(agent => {
@@ -881,6 +895,8 @@
     });
   }
 
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   init().then(() => { renderToolPicker(); renderKbPicker(); renderWcPicker(); });
 </script>
 </body>

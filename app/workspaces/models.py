@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class WorkspaceCreate(BaseModel):
     name: str
     description: str | None = None
+    workspace_type: str = "standard"
 
 
 class WorkspaceUpdate(BaseModel):
@@ -19,6 +20,7 @@ class WorkspaceResponse(BaseModel):
     user_id: UUID
     name: str
     description: str | None
+    workspace_type: str = "standard"
     embed_enabled: bool
     embed_token: str | None = None
     embed_hitl_auto_approve: bool

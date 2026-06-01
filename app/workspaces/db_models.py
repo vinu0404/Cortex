@@ -33,6 +33,7 @@ class Workspace(Base):
     embed_budget_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     embed_spend_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
     embed_spend_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    workspace_type: Mapped[str] = mapped_column(String(20), nullable=False, default="standard", server_default="standard")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

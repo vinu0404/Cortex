@@ -28,7 +28,11 @@
     <span style="color:var(--border);">|</span>
     <span style="font-weight:600; font-size:15px;">Knowledge Bases</span>
   </div>
-  <button onclick="showModal('modal-create-kb')" class="btn btn-primary">+ New Knowledge Base</button>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
+    <div class="nav-divider"></div>
+    <button onclick="showModal('modal-create-kb')" class="btn btn-primary">+ New Knowledge Base</button>
+  </div>
 </nav>
 
 <div style="display:flex; height:calc(100vh - 52px); overflow:hidden;">
@@ -247,7 +251,7 @@
         <div style="display:flex; gap:8px;">
           <button onclick="document.getElementById('file-input').click()" class="btn btn-primary btn-sm">Upload Files</button>
           <button onclick="showModal('modal-s3')" class="btn btn-secondary btn-sm">From S3 URL</button>
-          <button onclick="reindexKb('${kb.id}')" class="btn btn-secondary btn-sm" ${hasReindexable ? '' : 'disabled title="No failed or cancelled documents to reindex"'}>Reindex all</button>
+          <button onclick="reindexKb('${kb.id}')" class="btn btn-secondary btn-sm" ${hasReindexable ? '' : `disabled title="${docs.length ? 'No failed or cancelled documents to reindex' : 'No documents uploaded yet'}"`}>Reindex all</button>
         </div>
       </div>
 
@@ -489,6 +493,8 @@
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   loadKbs();
   startSse();
 </script>

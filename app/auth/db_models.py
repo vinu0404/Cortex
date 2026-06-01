@@ -33,6 +33,7 @@ class User(Base):
     )
 
     vinu_agent_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    timezone: Mapped[str] = mapped_column(String(100), nullable=False, default="UTC", server_default="UTC")
 
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"

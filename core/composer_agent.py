@@ -85,6 +85,7 @@ async def compose_response(
     api_key: str,
     conversation_id: str,
     persona: str | None = None,
+    timezone: str = "UTC",
 ) -> tuple[str, list[ComposerArtifact], list[str], TokenUsage]:
     """Returns (response_text, artifacts, suggested_questions, token_usage)."""
     successful = {k: v for k, v in agent_outputs.items() if v.task_done and not v.error}
@@ -103,7 +104,7 @@ async def compose_response(
         "conversation_history": str(conversation_history[-6:]),
         "long_term_memory": str(long_term_memory.model_dump()),
         "persona": persona or "Default — be helpful and concise.",
-    })
+    }, timezone=timezone)
 
     ltm_system: str | None = None
     if long_term_memory.critical_facts:

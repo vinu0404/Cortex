@@ -44,8 +44,10 @@
     <a href="/knowledge-bases.html" class="btn btn-nav btn-sm">Knowledge Bases</a>
     <a href="/website-collections.html" class="btn btn-nav btn-sm">Web Collections</a>
     <a href="/dashboard.html" class="btn btn-nav btn-sm">Dashboard</a>
+    <a href="/cron-jobs.html" class="btn btn-nav btn-sm">Cron Jobs</a>
     <button onclick="toggleVinu()" id="vinu-toggle-btn" class="btn btn-nav btn-sm">Vinu</button>
     <div class="nav-divider"></div>
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
     <button onclick="handleLogout()" class="btn btn-nav-signout btn-sm">Sign out</button>
   </div>
 </nav>
@@ -192,7 +194,10 @@
     card.style.cursor = 'pointer';
     card.innerHTML = `
       <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:12px;">
-        <h3 style="font-size:15px; font-weight:600;">${esc(ws.name)}</h3>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <h3 style="font-size:15px; font-weight:600;">${esc(ws.name)}</h3>
+          ${ws.workspace_type === 'cron' ? '<span class="badge" style="font-size:10px; background:var(--surface-2);">Cron</span>' : ''}
+        </div>
         <span class="badge">${new Date(ws.created_at).toLocaleDateString()}</span>
       </div>
       ${ws.description ? `<p style="color:var(--text-muted); font-size:13px; margin-bottom:16px; line-height:1.5;">${esc(ws.description)}</p>` : '<div style="margin-bottom:16px;"></div>'}
@@ -265,6 +270,8 @@
   function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   loadUser();
+  _populateTzSelect();
+  initTimezone().then(() => _populateTzSelect());
   loadWorkspaces();
 </script>
 </body>

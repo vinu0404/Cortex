@@ -53,8 +53,8 @@ class WorkspaceManager:
             )
         )
 
-    async def create_workspace(self, user_id: UUID, name: str, description: str | None) -> Workspace:
-        workspace = Workspace(user_id=user_id, name=name, description=description)
+    async def create_workspace(self, user_id: UUID, name: str, description: str | None, workspace_type: str = "standard") -> Workspace:
+        workspace = Workspace(user_id=user_id, name=name, description=description, workspace_type=workspace_type)
         self._db.add(workspace)
         try:
             await self._db.flush()
@@ -253,6 +253,13 @@ class WorkspaceManager:
 
     async def _create_system_agents(self, workspace: Workspace) -> None:
         from app.agents.db_models import Agent, AgentTypeEnum
+        from app.api_keys.manager import ApiKeyManager
+        from config.settings import get_settings
+
+        _settings = get_settings()
+        keys = await ApiKeyManager(self._db).list_keys(workspace.user_id)
+        default_api_key_id = keys[0].id if keys else None
+
         for agent_type, name, order in [
             (AgentTypeEnum.MASTER, "Master Agent", 0),
             (AgentTypeEnum.COMPOSER, "Composer Agent", 9999),
@@ -264,5 +271,7 @@ class WorkspaceManager:
                 agent_type=agent_type,
                 display_order=order,
                 is_editable=False,
+                model_id=_settings.DEFAULT_MODEL if default_api_key_id else None,
+                api_key_id=default_api_key_id,
             )
             self._db.add(agent)

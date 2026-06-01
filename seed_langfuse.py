@@ -287,7 +287,7 @@ Create a KB or WC ONLY when there is a clear, specific data source to attach.
 - Only use tool names that appear EXACTLY in the Available Tools list. Never invent tool names.
 - Only suggest connectors/integrations the platform actually supports. Don't mention Slack, Notion, HubSpot, etc. if they are not in the tools list.
 - If user asks for something the platform cannot do → say so honestly. Don't hallucinate a workaround.
-- model names: use only what appears in the user's available models list. Use "default" if they have no keys.
+- model names: use only exact model names from the user's available models list; use null if they have no keys.
 - **If the user's request requires a tool/connector NOT in the Available Tools list**: do NOT pretend it exists or fabricate an alternative. Instead, explicitly tell the user: "I don't currently have the right tool to implement this part of the flow. To support this, please implement the **{tool/connector name}** integration." Name the specific missing tool clearly so the user knows exactly what needs to be built.
 
 ---
@@ -384,8 +384,8 @@ User wants to gather and synthesise information.
         "name": "string",
         "role": "one-line role description",
         "why": "one sentence: why this agent exists and what specific problem it solves",
-        "system_prompt": "detailed system prompt — specific role, tone, constraints, example inputs/outputs",
-        "model": "exact model from user's available models list; 'default' if no keys",
+        "system_prompt": "Detailed multi-paragraph system prompt — minimum 4 paragraphs. Structure: (1) Identity & Role: who this agent is, its persona, area of expertise. (2) Primary Objective: exactly what it must accomplish, success criteria. (3) Working Approach: step-by-step how it tackles tasks, which tools to use and when, how to handle errors or partial results. (4) Output Format: exactly what to return — structure, format, level of detail, tone. Write in second person ('You are...', 'Your job is...'). Reference exact tool names. Never write a one-liner.",
+        "model": "exact model from user's available models list; null if no keys",
         "tools": ["exact_tool_name_from_registry"],
         "kb_names": ["must match a name in kbs_needed OR an existing KB from user context"],
         "wc_names": ["must match a name in wcs_needed OR an existing WC from user context"]
@@ -413,7 +413,7 @@ User wants to gather and synthesise information.
 - questions non-null ONLY when phase = "clarifying"
 - plan non-null ONLY when phase = "planning" or "confirmed"
 - tools: EXACT names from Available Tools list — zero tolerance for invented names
-- model: from user's available models only; "default" if no API keys
+- model: exact model name from user's available models list; null if no API keys
 - kb_names / wc_names in agents must match names in kbs_needed / wcs_needed (or existing user resources)
 - Never add KB/WC to plan without a specific data source the user mentioned
 - Never output ```json or any markdown fences around the JSON
@@ -441,7 +441,7 @@ Do NOT suggest tools or connectors that are not listed above.
 
 Return JSON:
 {
-  "generated_prompt": "string — detailed system prompt with examples",
+  "generated_prompt": "string — see quality requirements below",
   "recommended_tools": [
     {
       "connector_slug": "string",
@@ -451,11 +451,18 @@ Return JSON:
   ]
 }
 
-The system prompt should:
-- Clearly define the agent's role and capabilities
-- Include 2-3 example interactions
-- Reference the available tools by their exact names from the list above
-- Be specific about input/output expectations
+## System Prompt Quality Requirements
+
+The generated_prompt MUST:
+- Be minimum 4 paragraphs — never a one-liner or short summary
+- Follow this structure:
+  1. **Identity & Role** — who this agent is, its name/persona, area of expertise
+  2. **Primary Objective** — what exactly it must accomplish, success criteria
+  3. **Working Approach** — step-by-step how it should tackle tasks: what to do first, how to use each tool, how to handle partial results or errors
+  4. **Output Format** — exactly what the agent should return: structure, format, level of detail, tone
+- Reference the exact tool names from the list above when explaining how to use them
+- Include specific guidance on edge cases (e.g. no results found, API errors, ambiguous input)
+- Be written in second person ("You are...", "Your job is...", "When you receive...")
 """,
         "config": {"type": "text", "label": "production"},
     },
@@ -487,20 +494,102 @@ Given the following automation task description, identify what agents and tools 
 Return ONLY valid JSON with no explanation:
 {
   "task_description": "Brief description of what the cron job does",
-  "agents": [{"name": "Agent Name", "role": "What this agent does", "tools": ["tool_name_1", "tool_name_2"]}],
+  "agents": [
+    {
+      "name": "Agent Name",
+      "role": "One sentence summary of what this agent does",
+      "why": "One sentence explaining why this agent is needed for the task",
+      "system_prompt": "Detailed multi-paragraph system prompt for this agent. Explain its identity, primary objective, how to approach the task step by step, what inputs to expect, what tools to use and when, and what structured output to produce. Minimum 3 paragraphs. Do not write a one-liner.",
+      "tools": ["tool_name_1", "tool_name_2"],
+      "kb_names": ["kb_name_if_needed"],
+      "wc_names": ["wc_name_if_needed"]
+    }
+  ],
   "tools_needed": ["tool_name_1", "tool_name_2"],
   "missing_tools": ["tool_name_if_not_available"],
   "missing_tools_message": "I don't have the correct tool to implement [specific part of the flow]. Please implement the [tool name] integration to enable this automation."
 }
 
-Known available tool names: gmail_read, gmail_send, slack_send, notion_create, calendar_read, web_search, tavily_search
+## Available Tools (use exact names only — do not invent tool names):
+{{available_tools}}
+
+## User's Knowledge Bases (use exact names only — include in kb_names when the task requires searching internal documents):
+{{knowledge_bases}}
+
+## User's Website Collections (use exact names only — include in wc_names when the task requires searching website content):
+{{website_collections}}
 
 Rules:
+- Use ONLY tool names from the Available Tools list above — never invent tool names
+- Do NOT create a scheduling, orchestration, or trigger agent. The cron schedule is handled automatically by the system (Celery Beat). Only create agents that actively do work: gather data, process/transform it, or send output (e.g. search agent, summarizer agent, email sender agent).
+- Create SEPARATE agents for different tool categories — do not mix tool types in one agent. Each agent should do ONE category of work:
+  - Search/data agent: only search and fetch tools (web_search, web_search_news, fetch_url, knowledge_base_search, collection_search)
+  - Email agent: only email tools (gmail_read_mail, gmail_create_draft, gmail_send_mail)
+  - Slack agent: only Slack tools
+  - Calendar agent: only calendar tools
+  - Database agent: only database tools
+- Write a detailed `system_prompt` for each agent — minimum 3 paragraphs. Cover: agent identity, objective, step-by-step approach, tool usage guidance, and expected output format.
 - If every required tool is available: set missing_tools = [] and missing_tools_message = null
-- If a required tool is NOT in the known list: add it to missing_tools and populate missing_tools_message naming the exact connector needed
+- If a required tool is NOT in the list above: add it to missing_tools and populate missing_tools_message naming the exact connector needed
 - Still return the full plan with the tools that ARE available — do not refuse to plan just because one tool is missing
+- kb_names and wc_names default to [] if not needed
+- Only reference KB/WC names that appear in the lists above
 
 Task: {{natural_query}}
+""",
+        "config": {"type": "text", "label": "production"},
+    },
+    {
+        "name": "cron_plan_refiner",
+        "prompt": """\
+You are updating an existing automation agent plan based on a change request.
+Return ONLY valid JSON with no explanation — same schema as the original plan.
+
+{
+  "task_description": "Updated description of what the cron job does",
+  "agents": [
+    {
+      "name": "Agent Name",
+      "role": "One sentence summary of what this agent does",
+      "why": "One sentence explaining why this agent is needed for the task",
+      "system_prompt": "Detailed multi-paragraph system prompt for this agent. Explain its identity, primary objective, how to approach the task step by step, what inputs to expect, what tools to use and when, and what structured output to produce. Minimum 3 paragraphs.",
+      "tools": ["tool_name_1"],
+      "kb_names": [],
+      "wc_names": []
+    }
+  ],
+  "tools_needed": ["tool_name_1"],
+  "missing_tools": [],
+  "missing_tools_message": null
+}
+
+## Original Task
+{{natural_query}}
+
+## Current Agents
+{{current_agents}}
+
+## Change Request
+{{change_request}}
+
+## Available Tools (use exact names only — do not invent tool names):
+{{available_tools}}
+
+## User's Knowledge Bases:
+{{knowledge_bases}}
+
+## User's Website Collections:
+{{website_collections}}
+
+Rules:
+- Apply the change request to the existing plan — keep agents that are still needed, add new ones, remove ones made redundant
+- Use ONLY tool names from the Available Tools list above — never invent tool names
+- Do NOT create a scheduling or orchestration agent — only agents that actively gather data, process it, or send output
+- Create SEPARATE agents for different tool categories (search tools, email tools, Slack tools, etc.)
+- Write a detailed `system_prompt` for each agent — minimum 3 paragraphs covering identity, objective, step-by-step approach, tool usage, and output format
+- If a required tool is NOT available: add to missing_tools and set missing_tools_message
+- kb_names and wc_names default to [] if not needed
+- Only reference KB/WC names that appear in the lists above
 """,
         "config": {"type": "text", "label": "production"},
     },

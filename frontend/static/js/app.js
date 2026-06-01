@@ -2,6 +2,30 @@
 
 const API = '/';
 
+// ---- Timezone ----
+let _appTimezone = (function() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
+})();
+
+async function initTimezone() {
+  try {
+    const user = await apiGet('auth/me');
+    if (user?.timezone && user.timezone !== 'UTC') {
+      _appTimezone = user.timezone;
+    } else if (user && (!user.timezone || user.timezone === 'UTC')) {
+      const detected = _appTimezone;
+      if (detected !== 'UTC') await apiPatch('auth/me', { timezone: detected });
+    }
+  } catch { /* silent */ }
+  const sel = document.getElementById('tz-select');
+  if (sel) sel.value = _appTimezone;
+}
+
+async function setTimezone(tz) {
+  _appTimezone = tz;
+  try { await apiPatch('auth/me', { timezone: tz }); } catch { /* silent */ }
+}
+
 function getToken() { return localStorage.getItem('access_token'); }
 function getRefreshToken() { return localStorage.getItem('refresh_token'); }
 function setTokens(access, refresh) {
@@ -22,7 +46,7 @@ function redirectHome() { window.location.href = '/index.html'; }
 function requireAuth() { if (!isLoggedIn()) redirectToAuth(); }
 
 async function apiFetch(path, options = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  const headers = { 'Content-Type': 'application/json', 'X-Timezone': _appTimezone, ...(options.headers || {}) };
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -144,6 +168,7 @@ async function* sseStream(path, body) {
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
+      'X-Timezone': _appTimezone,
     },
     body: JSON.stringify(body),
   });
@@ -190,6 +215,21 @@ async function* sseStream(path, body) {
 // ---- Modal helpers ----
 function showModal(id) { document.getElementById(id)?.classList.remove('hidden'); }
 function hideModal(id) { document.getElementById(id)?.classList.add('hidden'); }
+
+// ---- Timezone selector population ----
+function _populateTzSelect(selId) {
+  const sel = document.getElementById(selId || 'tz-select');
+  if (!sel) return;
+  const zones = [
+    'Pacific/Honolulu','America/Anchorage','America/Los_Angeles','America/Denver',
+    'America/Chicago','America/New_York','America/Sao_Paulo','Atlantic/Azores',
+    'Europe/London','Europe/Paris','Europe/Berlin','Europe/Moscow',
+    'Asia/Dubai','Asia/Karachi','Asia/Kolkata','Asia/Dhaka',
+    'Asia/Bangkok','Asia/Singapore','Asia/Tokyo','Asia/Seoul',
+    'Australia/Sydney','Pacific/Auckland','UTC',
+  ];
+  sel.innerHTML = zones.map(z => `<option value="${z}"${z === _appTimezone ? ' selected' : ''}>${z.replace('_',' ')}</option>`).join('');
+}
 
 // ---- Confirm dialog ----
 function confirmDialog({ title, message, confirmText = 'Delete', confirmClass = 'btn-danger', onConfirm }) {

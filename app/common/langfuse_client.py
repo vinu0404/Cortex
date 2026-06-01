@@ -1,4 +1,6 @@
+from datetime import datetime
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from langfuse import Langfuse
 
@@ -16,11 +18,17 @@ def get_langfuse() -> Langfuse:
     )
 
 
-def get_compiled_prompt(name: str, variables: dict | None = None) -> str:
+def get_compiled_prompt(name: str, variables: dict | None = None, timezone: str = "UTC") -> str:
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    current_time = datetime.now(tz).strftime("%A, %B %-d %Y, %I:%M %p %Z")
+    vars_to_use = {"current_time": current_time, **(variables or {})}
     lf = get_langfuse()
     prompt = lf.get_prompt(
         name,
         label="production",
         cache_ttl_seconds=settings.LANGFUSE_PROMPT_CACHE_TTL,
     )
-    return prompt.compile(**(variables or {}))
+    return prompt.compile(**vars_to_use)

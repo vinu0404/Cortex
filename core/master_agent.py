@@ -68,6 +68,7 @@ async def generate_plan(
     api_key: str,
     conversation_id: str,
     is_embed: bool = False,
+    timezone: str = "UTC",
 ) -> ExecutionPlan:
     registry = get_registry()
 
@@ -108,7 +109,7 @@ async def generate_plan(
         "conversation_history": str(conversation_history[-settings.SHORT_TERM_MEMORY_WINDOW:]),
         "long_term_memory": json.dumps(long_term_memory.model_dump()),
         "query": query,
-    })
+    }, timezone=timezone)
 
     if is_embed:
         prompt_text += (

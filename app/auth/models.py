@@ -32,5 +32,12 @@ class UserResponse(BaseModel):
     role: RoleEnum
     is_active: bool
     created_at: datetime
+    timezone: str = "UTC"
+    vinu_agent_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    timezone: str | None = None
+    vinu_agent_name: str | None = None

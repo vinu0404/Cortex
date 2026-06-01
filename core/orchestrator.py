@@ -34,6 +34,7 @@ class OrchestrationContext:
         connector_tokens_db: dict[str, dict],  # connector_slug → decrypted token dict
         persona: str | None = None,
         is_embed: bool = False,
+        timezone: str = "UTC",
     ):
         self.user_id = user_id
         self.conversation_id = conversation_id
@@ -45,6 +46,7 @@ class OrchestrationContext:
         self.connector_tokens_db = connector_tokens_db
         self.persona = persona
         self.is_embed = is_embed
+        self.timezone = timezone
 
 
 async def execute_plan(
@@ -140,6 +142,7 @@ async def _run_agent(
             "conversation_id": str(context.conversation_id),
             "workspace_id": str(context.workspace_id),
             "persona": context.persona,
+            "timezone": context.timezone,
         },
         hitl_context=hitl_context,
     )

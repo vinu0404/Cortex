@@ -12,7 +12,7 @@ _SEARCH_URL = "https://api.tavily.com/search"
 _EXTRACT_URL = "https://api.tavily.com/extract"
 
 
-@tool(description="Search the web using Tavily Search API", requires_hitl=False, connector="")
+@tool(description="Search the web using Tavily Search API", requires_hitl=False, connector="tavily")
 async def web_search(
     query: str,
     num_results: int = 5,
@@ -56,12 +56,12 @@ async def web_search(
     }
 
 
-@tool(description="Search recent news using Tavily", requires_hitl=False, connector="")
+@tool(description="Search recent news using Tavily", requires_hitl=False, connector="tavily")
 async def web_search_news(query: str, num_results: int = 5) -> dict:
     return await web_search(query=query, num_results=num_results, topic="news")
 
 
-@tool(description="Fetch and extract clean text content from a URL via Tavily", requires_hitl=False, connector="")
+@tool(description="Fetch and extract clean text content from a URL via Tavily", requires_hitl=False, connector="tavily")
 async def fetch_url(url: str) -> dict:
     api_key = settings.TAVILY_API_KEY
     if not api_key:

@@ -47,7 +47,7 @@ async def create_workspace(
 ) -> JSONResponse:
     try:
         manager = WorkspaceManager(db)
-        ws = await manager.create_workspace(current_user.id, body.name, body.description)
+        ws = await manager.create_workspace(current_user.id, body.name, body.description, body.workspace_type)
         return ok(WorkspaceResponse.model_validate(ws).model_dump(mode="json"), status_code=201)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)

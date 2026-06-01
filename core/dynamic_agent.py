@@ -1,6 +1,8 @@
 import json
 import logging
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import litellm
 from tenacity import (
@@ -60,6 +62,14 @@ def _build_system_prompt(agent_def: dict, agent_input: AgentInput, is_embed: boo
             "Prioritise answering from knowledge bases and website collections before reaching for external tools. "
             "Search KB/WC thoroughly. Give complete, self-contained answers — the visitor has no other context."
         )
+
+    tz_name = agent_input.metadata.get("timezone", "UTC")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    current_time = datetime.now(tz).strftime("%A, %B %-d %Y, %I:%M %p %Z")
+    parts.append(f"\nCurrent date and time: {current_time}")
 
     return "\n".join(parts)
 

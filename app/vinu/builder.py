@@ -29,6 +29,13 @@ class _AgentBuildContext:
     api_key_id: UUID | None
 
 
+def _resolve_agent_model(spec_model: str | None, default_model_id: str) -> str:
+    """Return spec model if it's a real model name, otherwise fall back to default."""
+    if not spec_model or spec_model == "default":
+        return default_model_id
+    return spec_model
+
+
 def _build_tool_connector_map() -> dict[str, str]:
     from tools.registry import get_registry
     registry = get_registry()
@@ -265,7 +272,7 @@ async def _create_agents(
                 user_id=ctx.user_id,
                 name=name,
                 system_prompt=spec.get("system_prompt", ""),
-                model_id=spec.get("model") or ctx.default_model_id,
+                model_id=_resolve_agent_model(spec.get("model"), ctx.default_model_id),
                 api_key_id=ctx.api_key_id,
                 display_order=order,
                 tools_config=tools_config,

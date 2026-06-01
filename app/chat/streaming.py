@@ -73,6 +73,7 @@ async def chat_stream(
     persona_id: UUID | None,
     is_embed: bool = False,
     embed_hitl_auto_approve: bool = True,
+    timezone: str = "UTC",
 ) -> AsyncGenerator[str, None]:
     start_time = time.monotonic()
 
@@ -133,6 +134,7 @@ async def chat_stream(
             api_key=master_key,
             conversation_id=str(conversation_id),
             is_embed=is_embed,
+            timezone=timezone,
         )
     except PlanValidationError as e:
         yield sse_event({"message": str(e)}, "error")
@@ -165,6 +167,7 @@ async def chat_stream(
         connector_tokens_db=connector_tokens_db,
         persona=persona_prompt,
         is_embed=is_embed,
+        timezone=timezone,
     )
 
     hitl_futures: dict[str, asyncio.Future] = {}
@@ -285,6 +288,7 @@ async def chat_stream(
             api_key=composer_key,
             conversation_id=str(conversation_id),
             persona=persona_prompt,
+            timezone=timezone,
         )
     except Exception:
         logger.exception("Composer failed for conversation %s", conversation_id)
@@ -594,6 +598,11 @@ async def _get_composer_key(workspace_id: UUID, user_id: UUID, db: AsyncSession)
 
     key = await _fetch_api_key(ApiKeyManager(db), composer.api_key_id, user_id)
     return composer.model_id or settings.DEFAULT_MODEL, key
+
+
+# Public API for external consumers (Celery tasks, cron runner)
+load_workspace_context = _load_workspace_context
+get_composer_key = _get_composer_key
 
 
 async def _load_persona(persona_id: UUID, user_id: UUID, db: AsyncSession) -> str | None:
