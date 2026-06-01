@@ -9,7 +9,7 @@ celery_app = Celery(
     "cortex",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_BROKER_URL,
-    include=["document_pipeline.tasks", "web_pipeline.tasks"],
+    include=["document_pipeline.tasks", "web_pipeline.tasks", "app.cron_jobs.tasks"],
 )
 
 celery_app.conf.update(
@@ -21,6 +21,7 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    redbeat_redis_url=settings.CELERY_BROKER_URL,
 )
 
 

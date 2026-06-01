@@ -17,6 +17,7 @@ from app.connectors.controller import router as connectors_router
 from app.api_keys.controller import router as api_keys_router
 from app.personas.controller import router as personas_router
 from app.chat.controller import router as chat_router
+from app.cron_jobs.controller import router as cron_jobs_router
 from app.common.middleware import RequestContextMiddleware
 from config.settings import get_settings
 from database.session import engine
@@ -115,6 +116,7 @@ app.include_router(connectors_router, prefix="/connectors", tags=["connectors"])
 app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
 app.include_router(personas_router, prefix="/personas", tags=["personas"])
 app.include_router(chat_router, tags=["chat"])
+app.include_router(cron_jobs_router, prefix="/cron-jobs", tags=["cron-jobs"])
 
 # ---- Admin Router ----
 from app.admin.controller import router as admin_router
@@ -183,3 +185,7 @@ async def serve_website_collections():
 @app.get("/workspace-dashboard.html")
 async def serve_workspace_dashboard():
     return FileResponse("frontend/workspace-dashboard.html")
+
+@app.get("/cron-jobs.html")
+async def serve_cron_jobs():
+    return FileResponse("frontend/cron-jobs.html")

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — Cron Jobs</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .cron-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; transition:border-color .18s, box-shadow .18s; }
+    .cron-card:hover { border-color:var(--border-dark); box-shadow:var(--shadow-md); }
+    .status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:4px; }
+    .status-dot.active { background:#22c55e; }
+    .status-dot.paused { background:var(--border-dark); }
+    .step-row { display:flex; align-items:center; gap:10px; padding:8px 0; font-size:13px; }
+    .step-icon { width:18px; height:18px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .step-icon.running { background:var(--surface-2); }
+    .step-icon.done { background:#f0fdf4; }
+    .step-icon.error { background:#fff0f0; }
+    .plan-card { border:1px solid var(--border); border-radius:var(--radius); padding:20px; background:var(--surface); margin-top:12px; animation:scaleIn .22s cubic-bezier(.22,.61,.36,1) both; }
+    .spinner-sm { width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; display:inline-block; }
+  </style>
+</head>
+<body>
+
+<nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span style="font-weight:600; font-size:15px;">Cron Jobs</span>
+  </div>
+  <div style="display:flex; gap:8px; align-items:center;">
+    <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
+    <select id="tz-select" class="tz-select" onchange="setTimezone(this.value)" title="Your timezone"></select>
+  </div>
+</nav>
+
+<main style="max-width:900px; margin:0 auto; padding:32px 24px;" class="page-enter">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+    <div>
+      <h1 style="font-size:22px; font-weight:700; letter-spacing:-.5px;">Cron Jobs</h1>
+      <p style="color:var(--text-muted); font-size:14px; margin-top:2px;">Automate tasks on a schedule</p>
+    </div>
+    <button onclick="showCreateModal()" class="btn btn-primary">+ New Cron Job</button>
+  </div>
+
+  <div id="jobs-list"></div>
+
+</main>
+
+<!-- Create Modal -->
+<div id="modal-create" class="modal-overlay hidden">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">New Cron Job</span>
+      <button class="modal-close" onclick="hideModal('modal-create')">×</button>
+    </div>
+
+    <!-- Phase 1: Input -->
+    <div id="phase-input">
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div class="form-group">
+          <label>Name</label>
+          <input id="cron-name" class="input" placeholder="Daily Email Summary" required>
+        </div>
+        <div class="form-group">
+          <label>What should it do? (describe in plain language)</label>
+          <textarea id="cron-query" class="textarea" placeholder="Every weekday at 9am, summarize new emails and post to Slack" style="min-height:90px;" required></textarea>
+        </div>
+        <div class="form-group">
+          <label>Timezone</label>
+          <select id="cron-tz" class="select" style="background:var(--bg);"></select>
+        </div>
+        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px;">
+          <button type="button" onclick="hideModal('modal-create')" class="btn btn-secondary">Cancel</button>
+          <button onclick="analyzeSchedule()" id="analyze-btn" class="btn btn-primary">Analyze →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 2: Streaming steps + plan card -->
+    <div id="phase-stream" class="hidden">
+      <div id="stream-steps" style="margin-bottom:8px;"></div>
+      <div id="plan-card" class="hidden plan-card">
+        <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-muted); letter-spacing:.04em; text-transform:uppercase; font-size:11px;">Your Cron Plan</div>
+        <div style="display:grid; gap:6px; font-size:13px;">
+          <div><span style="color:var(--text-muted);">Schedule:</span> <strong id="plan-schedule"></strong></div>
+          <div><span style="color:var(--text-muted);">Cron expr:</span> <code id="plan-cron" style="font-size:12px; background:var(--surface-2); padding:2px 6px; border-radius:4px;"></code> <span style="font-size:11px; color:var(--text-faint);">UTC</span></div>
+          <div><span style="color:var(--text-muted);">Task:</span> <span id="plan-task"></span></div>
+          <div id="plan-agents-row" class="hidden"><span style="color:var(--text-muted);">Agents:</span> <span id="plan-agents"></span></div>
+        </div>
+        <div id="plan-missing-tools" class="hidden" style="margin-top:12px; padding:10px 14px; background:#fff8f0; border:1px solid #f0c080; border-radius:var(--radius); font-size:13px; color:#8a5700; line-height:1.5;"></div>
+        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+          <button onclick="backToInput()" class="btn btn-secondary">Edit</button>
+          <button onclick="createCronJob()" id="create-btn" class="btn btn-primary">Accept &amp; Create</button>
+        </div>
+      </div>
+      <div id="stream-error" class="hidden" style="color:var(--danger); font-size:13px; margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  requireAuth();
+
+  let _pendingPlan = null;
+
+  async function init() {
+    try {
+      const user = await apiGet('auth/me');
+      document.getElementById('user-email').textContent = user?.email || '';
+    } catch {}
+    await loadJobs();
+  }
+
+  async function loadJobs() {
+    const el = document.getElementById('jobs-list');
+    el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:120px;color:var(--text-muted);"><div class="spinner"></div></div>';
+    try {
+      const jobs = await apiGet('cron-jobs');
+      renderJobs(jobs || []);
+    } catch (err) {
+      el.innerHTML = `<div style="color:var(--danger); font-size:13px;">${esc(err.message)}</div>`;
+    }
+  }
+
+  function renderJobs(jobs) {
+    const el = document.getElementById('jobs-list');
+    if (!jobs.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); font-size:14px; padding:40px 0; text-align:center;">No cron jobs yet. Create one to get started.</div>';
+      return;
+    }
+    el.innerHTML = jobs.map(j => `
+      <div class="cron-card anim-item" style="margin-bottom:12px;">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:6px;">
+          <div>
+            <span style="font-weight:600; font-size:15px;">${esc(j.name)}</span>
+            <span style="margin-left:8px;">
+              <span class="status-dot ${j.is_active ? 'active' : 'paused'}"></span>
+              <span style="font-size:12px; color:var(--text-muted);">${j.is_active ? 'Active' : 'Paused'}</span>
+            </span>
+          </div>
+          <span class="badge">${esc(j.human_schedule)}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+          ${j.last_run_at ? `Last run: ${_ago(j.last_run_at)} · ` : ''}
+          ${j.next_run_at ? `Next run: ${_localTime(j.next_run_at, j.timezone)}` : '—'}
+        </div>
+        <div style="font-size:12px; color:var(--text-faint); margin-bottom:12px; font-style:italic;">"${esc(j.natural_query)}"</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button onclick="runNow('${j.id}')" class="btn btn-secondary btn-sm">Run Now</button>
+          <button onclick="toggleJob('${j.id}', ${!j.is_active})" class="btn btn-secondary btn-sm">${j.is_active ? 'Pause' : 'Resume'}</button>
+          <a href="/workspace.html?id=${j.workspace_id}" class="btn btn-secondary btn-sm">Open Workspace</a>
+          <button onclick="deleteJob('${j.id}')" class="btn btn-danger btn-sm">Delete</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function _localTime(utcStr, tz) {
+    try {
+      return new Date(utcStr).toLocaleString(undefined, { timeZone: tz || _appTimezone, dateStyle: 'short', timeStyle: 'short' });
+    } catch { return new Date(utcStr).toLocaleString(); }
+  }
+
+  function _ago(isoStr) {
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  function showCreateModal() {
+    _pendingPlan = null;
+    document.getElementById('cron-name').value = '';
+    document.getElementById('cron-query').value = '';
+    document.getElementById('phase-input').classList.remove('hidden');
+    document.getElementById('phase-stream').classList.add('hidden');
+    document.getElementById('modal-title').textContent = 'New Cron Job';
+    const cronTz = document.getElementById('cron-tz');
+    if (cronTz) cronTz.value = _appTimezone;
+    showModal('modal-create');
+  }
+
+  function backToInput() {
+    document.getElementById('phase-input').classList.remove('hidden');
+    document.getElementById('phase-stream').classList.add('hidden');
+    document.getElementById('modal-title').textContent = 'New Cron Job';
+  }
+
+  async function analyzeSchedule() {
+    const name = document.getElementById('cron-name').value.trim();
+    const query = document.getElementById('cron-query').value.trim();
+    const tz = document.getElementById('cron-tz').value || _appTimezone;
+    if (!name || !query) { toast('Name and description are required', 'error'); return; }
+
+    const btn = document.getElementById('analyze-btn');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Analyzing…';
+
+    document.getElementById('phase-input').classList.add('hidden');
+    document.getElementById('phase-stream').classList.remove('hidden');
+    document.getElementById('stream-steps').innerHTML = '';
+    document.getElementById('plan-card').classList.add('hidden');
+    document.getElementById('stream-error').classList.add('hidden');
+    document.getElementById('modal-title').textContent = 'Analyzing…';
+
+    try {
+      const stepsEl = document.getElementById('stream-steps');
+
+      for await (const { event, data } of sseStream('cron-jobs/analyze', { natural_query: query, timezone: tz })) {
+        if (event === 'step') {
+          const existing = document.getElementById(`step-${data.step.replace(/\s/g,'_')}`);
+          const icon = data.status === 'running'
+            ? '<span class="spinner-sm"></span>'
+            : data.status === 'done' ? '<span style="color:#22c55e; font-size:14px;">✓</span>'
+            : '<span style="color:var(--danger);">✗</span>';
+          const row = `<div class="step-row" id="step-${data.step.replace(/\s/g,'_')}">
+            <span>${icon}</span>
+            <span>${esc(data.step)}</span>
+            ${data.result ? `<span style="color:var(--text-muted); font-size:12px;">${esc(JSON.stringify(data.result).slice(0,80))}</span>` : ''}
+          </div>`;
+          if (existing) existing.outerHTML = row;
+          else stepsEl.insertAdjacentHTML('beforeend', row);
+        } else if (event === 'done') {
+          _pendingPlan = { name, natural_query: query, timezone: tz, ...data };
+          document.getElementById('plan-schedule').textContent = data.human_schedule;
+          document.getElementById('plan-cron').textContent = data.cron_expr;
+          document.getElementById('plan-task').textContent = data.task_description;
+          if (data.agents?.length) {
+            document.getElementById('plan-agents').textContent = data.agents.map(a => `${a.name} (${(a.tools||[]).join(', ')||'no tools'})`).join(', ');
+            document.getElementById('plan-agents-row').classList.remove('hidden');
+          }
+          const missingEl = document.getElementById('plan-missing-tools');
+          if (data.missing_tools?.length && data.missing_tools_message) {
+            missingEl.textContent = `⚠ ${data.missing_tools_message}`;
+            missingEl.classList.remove('hidden');
+          } else {
+            missingEl.classList.add('hidden');
+          }
+          document.getElementById('plan-card').classList.remove('hidden');
+          document.getElementById('modal-title').textContent = 'Review Plan';
+        } else if (event === 'error') {
+          document.getElementById('stream-error').textContent = data.message;
+          document.getElementById('stream-error').classList.remove('hidden');
+          document.getElementById('modal-title').textContent = 'Error';
+        }
+      }
+    } catch (err) {
+      document.getElementById('stream-error').textContent = err.message;
+      document.getElementById('stream-error').classList.remove('hidden');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Analyze →';
+    }
+  }
+
+  async function createCronJob() {
+    if (!_pendingPlan) return;
+    const btn = document.getElementById('create-btn');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Creating…';
+    try {
+      await apiPost('cron-jobs', {
+        name: _pendingPlan.name,
+        natural_query: _pendingPlan.natural_query,
+        cron_expr: _pendingPlan.cron_expr,
+        human_schedule: _pendingPlan.human_schedule,
+        timezone: _pendingPlan.timezone,
+        task_description: _pendingPlan.task_description || '',
+        agents: _pendingPlan.agents || [],
+        tools_needed: _pendingPlan.tools_needed || [],
+      });
+      hideModal('modal-create');
+      toast('Cron job created!');
+      await loadJobs();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Accept & Create';
+    }
+  }
+
+  async function runNow(id) {
+    try {
+      await apiPost(`cron-jobs/${id}/run-now`, {});
+      toast('Dispatched — check workspace for results.');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function toggleJob(id, isActive) {
+    try {
+      await apiPatch(`cron-jobs/${id}/toggle`, { is_active: isActive });
+      await loadJobs();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function deleteJob(id) {
+    confirmDialog({
+      title: 'Delete cron job?',
+      message: 'The cron job, its schedule, and its linked workspace will be permanently deleted.',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try { await apiDelete(`cron-jobs/${id}`); await loadJobs(); }
+        catch (err) { toast(err.message, 'error'); }
+      },
+    });
+  }
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  _populateTzSelect();
+  initTimezone().then(() => { _populateTzSelect(); _populateTzSelect('cron-tz'); });
+  init();
+</script>
+</body>
+</html>
