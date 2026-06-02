@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     VINU_COMPRESS_FIRST_N: int = 4
     VINU_COMPRESS_TOKEN_THRESHOLD: int = 80_000
 
+    # --- MCP subprocess timeouts ---
+    MCP_TOOL_TIMEOUT_SECONDS: int = 30       # kill stdio tool call process if it hangs
+    MCP_DISCOVERY_TIMEOUT_SECONDS: int = 60  # kill stdio tool discovery process if it hangs
+
     # --- Features ---
     ENABLE_SUGGESTIONS: bool = True
     GUARDRAILS_ENABLED: bool = True

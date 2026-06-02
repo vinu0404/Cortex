@@ -134,6 +134,9 @@ app.include_router(embed_router, tags=["embed"])
 from app.vinu.controller import router as vinu_router
 app.include_router(vinu_router, prefix="/vinu", tags=["vinu"])
 
+from app.mcp_servers.controller import router as mcp_servers_router
+app.include_router(mcp_servers_router, prefix="/mcp-servers", tags=["mcp-servers"])
+
 
 # ---- Health & Frontend ----
 @app.get("/health")
@@ -189,3 +192,8 @@ async def serve_workspace_dashboard():
 @app.get("/cron-jobs.html")
 async def serve_cron_jobs():
     return FileResponse("frontend/cron-jobs.html")
+
+
+@app.get("/mcp-servers.html")
+async def serve_mcp_servers():
+    return FileResponse("frontend/mcp-servers.html")

@@ -154,6 +154,23 @@ async def _load_user_resources(user_id) -> tuple[str, str, str]:
         kb_context = "None"
         wc_context = "None"
 
+    tools_lines = [line.lstrip("- ") for line in available_tools.split("\n") if line.strip()]
+    try:
+        from app.mcp_servers.db_models import MCPServer
+        from sqlalchemy import select as sa_select
+        async with get_custom_db_context_session() as db:
+            mcp_servers = list(await db.scalars(
+                sa_select(MCPServer).where(MCPServer.user_id == user_id, MCPServer.is_active.is_(True))
+            ))
+        for srv in mcp_servers:
+            for t in (srv.discovered_tools or []):
+                tools_lines.append(
+                    f"{t['name']} (connector: mcp:{srv.id}): {t.get('description', '')} [server: {srv.name}]"
+                )
+    except Exception as exc:
+        logger.warning("Could not load MCP server tools: %s", exc)
+
+    available_tools = "\n".join(f"- {line}" for line in tools_lines) or "No tools available."
     return available_tools, kb_context, wc_context
 
 

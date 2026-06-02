@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex — MCP Servers</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    .mcp-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; transition:border-color .18s, box-shadow .18s; }
+    .mcp-card:hover { border-color:var(--border-dark); box-shadow:var(--shadow-md); }
+    .tool-row { display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px; }
+    .tool-row:last-child { border-bottom:none; }
+    .hitl-toggle { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+    .transport-badge { font-size:11px; font-weight:600; padding:2px 7px; border-radius:4px; background:var(--surface); color:var(--text-muted); border:1px solid var(--border); }
+    .transport-badge.stdio { background:#eef4ff; color:#2563eb; border-color:#bfdbfe; }
+    .transport-opts { display:flex; gap:8px; }
+    .transport-opt { flex:1; display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:2px solid var(--border); border-radius:var(--radius); cursor:pointer; transition:border-color .15s, background .15s; background:var(--bg); }
+    .transport-opt:hover { border-color:var(--border-dark); }
+    .transport-opt.active { border-color:var(--accent); background:var(--surface); }
+    .transport-opt input[type=radio] { margin-top:2px; flex-shrink:0; accent-color:var(--accent); }
+    .transport-opt-label { font-size:13px; font-weight:600; color:var(--text); }
+    .transport-opt-desc { font-size:12px; color:var(--text-muted); margin-top:2px; }
+    .env-row { display:flex; gap:6px; align-items:center; margin-bottom:6px; }
+    .env-row input { flex:1; }
+    .env-row .btn-icon { padding:5px 9px; font-size:14px; line-height:1; }
+  </style>
+</head>
+<body>
+
+<nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <a href="/index.html" style="color:var(--text-muted); font-size:13px;">← Workspaces</a>
+    <span style="color:var(--border);">|</span>
+    <span style="font-weight:600; font-size:15px;">MCP Servers</span>
+  </div>
+  <span id="user-email" style="font-size:13px; color:var(--text-muted);"></span>
+</nav>
+
+<main style="max-width:860px; margin:0 auto; padding:32px 24px;" class="page-enter">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+    <div>
+      <h1 style="font-size:22px; font-weight:700; letter-spacing:-.5px;">MCP Servers</h1>
+      <p style="color:var(--text-muted); font-size:14px; margin-top:2px;">Connect any MCP server — tools are auto-discovered and available in agents</p>
+    </div>
+    <button onclick="showAddModal()" class="btn btn-primary">+ Add MCP Server</button>
+  </div>
+
+  <div id="servers-list"></div>
+
+</main>
+
+<!-- Add/Edit Modal -->
+<div id="modal-server" class="modal-overlay hidden">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">Add MCP Server</span>
+      <button class="modal-close" onclick="hideModal('modal-server')">×</button>
+    </div>
+    <div style="padding:20px; display:flex; flex-direction:column; gap:14px;">
+
+      <!-- Name -->
+      <div>
+        <label class="form-label">Name</label>
+        <input id="srv-name" class="input" placeholder="e.g. Firecrawl">
+      </div>
+
+      <!-- Transport selector -->
+      <div>
+        <label class="form-label">Transport</label>
+        <div class="transport-opts">
+          <label class="transport-opt active" id="tab-http" onclick="setTransport('http')">
+            <input type="radio" name="transport" value="http" checked>
+            <div>
+              <div class="transport-opt-label">HTTP URL</div>
+              <div class="transport-opt-desc">Remote server with a URL<br>(e.g. alphavantage, hosted MCPs)</div>
+            </div>
+          </label>
+          <label class="transport-opt" id="tab-stdio" onclick="setTransport('stdio')">
+            <input type="radio" name="transport" value="stdio">
+            <div>
+              <div class="transport-opt-label">stdio Command</div>
+              <div class="transport-opt-desc">Local subprocess via npx, uvx, python, etc.<br>(e.g. firecrawl-mcp, minimax-mcp)</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- HTTP fields -->
+      <div id="fields-http" style="display:flex; flex-direction:column; gap:14px;">
+        <div>
+          <label class="form-label">Server URL</label>
+          <input id="srv-url" class="input" placeholder="https://mcp.example.com/mcp?apikey=KEY">
+        </div>
+        <div>
+          <label class="form-label">Auth Type</label>
+          <select id="srv-auth-type" class="input" onchange="onAuthTypeChange()">
+            <option value="none">None</option>
+            <option value="bearer">Bearer Token</option>
+            <option value="api_key">API Key Header</option>
+          </select>
+        </div>
+        <div id="field-header-name" style="display:none;">
+          <label class="form-label">Header Name</label>
+          <input id="srv-header-name" class="input" placeholder="e.g. X-API-Key">
+        </div>
+        <div id="field-token" style="display:none;">
+          <label class="form-label">Token / Key</label>
+          <input id="srv-token" class="input" type="password" placeholder="Enter token or API key">
+        </div>
+      </div>
+
+      <!-- stdio fields -->
+      <div id="fields-stdio" style="display:none; flex-direction:column; gap:14px;">
+
+        <!-- JSON paste — stdio only -->
+        <div style="background:var(--surface); border:1px dashed var(--border-dark); border-radius:var(--radius); padding:12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <span style="font-size:12px; font-weight:600; color:var(--text-muted);">PASTE JSON CONFIG</span>
+            <button onclick="toggleJsonPaste()" id="json-paste-toggle" class="btn btn-secondary btn-sm">Expand</button>
+          </div>
+          <div id="json-paste-collapsed" style="font-size:12px; color:var(--text-muted);">Paste a standard <code>mcpServers</code> JSON — fields auto-fill.</div>
+          <div id="json-paste-open" style="display:none;">
+            <textarea id="json-input" class="input" rows="6" style="font-family:monospace; font-size:12px; resize:vertical;" placeholder='{"mcpServers":{"MiniMax":{"command":"uvx","args":["minimax-mcp","-y"],"env":{"MINIMAX_API_KEY":"..."}}}}&#10;&#10;— or just the inner server object —&#10;{"command":"uvx","args":["minimax-mcp","-y"],"env":{"MINIMAX_API_KEY":"..."}}' oninput="onJsonInput(this.value)"></textarea>
+            <div id="json-parse-error" style="font-size:12px; color:var(--danger); margin-top:4px; display:none;"></div>
+          </div>
+        </div>
+
+        <div>
+          <label class="form-label" style="display:flex; align-items:center; justify-content:space-between;">
+            Command
+            <span id="cmd-from-json" style="display:none; font-size:11px; font-weight:400; color:var(--text-muted);">
+              filled from JSON &nbsp;<a href="#" onclick="unlockCommand(event)" style="color:var(--accent);">edit</a>
+            </span>
+          </label>
+          <input id="srv-command" class="input" placeholder="npx -y firecrawl-mcp  or  uvx minimax-mcp  or  python -m server">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Full command string — any runner works (npx, uvx, python, etc.)</div>
+        </div>
+        <div>
+          <label class="form-label">Environment Variables</label>
+          <div id="env-vars-list"></div>
+          <button onclick="addEnvRow()" class="btn btn-secondary btn-sm" style="margin-top:4px;">+ Add Variable</button>
+        </div>
+      </div>
+
+      <div id="modal-error" style="color:var(--error); font-size:13px; display:none;"></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button onclick="hideModal('modal-server')" class="btn btn-secondary">Cancel</button>
+        <button id="modal-save-btn" onclick="saveServer()" class="btn btn-primary">Connect &amp; Discover Tools</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Delete Modal -->
+<div id="modal-confirm" class="modal-overlay hidden">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-header">
+      <span class="modal-title">Delete MCP Server?</span>
+      <button class="modal-close" onclick="hideModal('modal-confirm')">×</button>
+    </div>
+    <div style="padding:20px;">
+      <p style="font-size:14px; color:var(--text-muted); margin-bottom:20px;">This will remove the server and all its discovered tools. Agents referencing these tools will need to be updated.</p>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button onclick="hideModal('modal-confirm')" class="btn btn-secondary">Cancel</button>
+        <button id="confirm-delete-btn" onclick="confirmDelete()" class="btn btn-danger">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+  let servers = [];
+  let editingId = null;
+  let deletingId = null;
+  let currentTransport = 'http';
+
+  function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  async function init() {
+    try {
+      const user = await apiGet('auth/me');
+      document.getElementById('user-email').textContent = user?.email || '';
+    } catch { /* not critical */ }
+    await loadServers();
+  }
+
+  async function loadServers() {
+    servers = await apiGet('mcp-servers').catch(() => []);
+    renderServers();
+  }
+
+  function renderServers() {
+    const el = document.getElementById('servers-list');
+    if (!servers.length) {
+      el.innerHTML = `<div style="text-align:center; padding:60px 0; color:var(--text-muted);">
+        <div style="font-size:32px; margin-bottom:12px;">🔌</div>
+        <div style="font-size:15px; font-weight:500;">No MCP servers connected</div>
+        <div style="font-size:13px; margin-top:4px;">Add a server to use its tools in your agents</div>
+      </div>`;
+      return;
+    }
+    el.innerHTML = servers.map(srv => renderCard(srv)).join('');
+  }
+
+  function renderCard(srv) {
+    const syncedAgo = srv.last_synced_at ? timeSince(srv.last_synced_at) : 'never';
+    const toolCount = (srv.discovered_tools || []).length;
+    const isStdio = srv.transport_type === 'stdio';
+    const badgeClass = isStdio ? 'stdio' : '';
+    const badgeLabel = isStdio ? 'stdio' : 'HTTP';
+    const subtitle = isStdio
+      ? `<span style="color:var(--text-muted); font-size:12px; margin-left:10px; font-family:monospace;">${esc(srv.command || '')}</span>`
+      : `<span style="color:var(--text-muted); font-size:12px; margin-left:10px;">${esc(srv.server_url)}</span>`;
+
+    const toolRows = (srv.discovered_tools || []).map(t => `
+      <div class="tool-row">
+        <div>
+          <span style="font-weight:500;">${esc(t.name)}</span>
+          ${t.description ? `<span style="color:var(--text-muted); margin-left:6px;">— ${esc(t.description.slice(0, 80))}</span>` : ''}
+        </div>
+        <label class="hitl-toggle" title="Require human approval before running this tool">
+          <input type="checkbox" ${t.requires_hitl ? 'checked' : ''} onchange="toggleHITL('${srv.id}', '${esc(t.name)}', this.checked)">
+          <span>HITL</span>
+        </label>
+      </div>`).join('');
+
+    return `<div class="mcp-card" style="margin-bottom:12px;" id="card-${srv.id}">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="font-weight:600; font-size:15px;">${esc(srv.name)}</span>
+          <span class="transport-badge ${badgeClass}">${badgeLabel}</span>
+          ${subtitle}
+        </div>
+        <div style="display:flex; gap:8px; flex-shrink:0;">
+          <button onclick="syncServer('${srv.id}')" class="btn btn-secondary btn-sm" id="sync-btn-${srv.id}">Sync</button>
+          <button onclick="showEditModal('${srv.id}')" class="btn btn-secondary btn-sm">Edit</button>
+          <button onclick="showDeleteModal('${srv.id}')" class="btn btn-danger btn-sm">Delete</button>
+        </div>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+        ${isStdio ? '' : `Auth: <strong>${esc(srv.auth_type)}</strong> &nbsp;·&nbsp; `}Last synced: <strong>${syncedAgo}</strong> &nbsp;·&nbsp; ${toolCount} tool${toolCount !== 1 ? 's' : ''}
+      </div>
+      ${toolCount > 0 ? `<div style="margin-top:12px; border-top:1px solid var(--border); padding-top:10px;">${toolRows}</div>` : ''}
+    </div>`;
+  }
+
+  // JSON paste
+  function unlockCommand(e) {
+    e.preventDefault();
+    const cmdEl = document.getElementById('srv-command');
+    cmdEl.disabled = false;
+    cmdEl.style.opacity = '';
+    cmdEl.focus();
+    document.getElementById('cmd-from-json').style.display = 'none';
+  }
+
+  function _resetCommandLock() {
+    const cmdEl = document.getElementById('srv-command');
+    cmdEl.disabled = false;
+    cmdEl.style.opacity = '';
+    document.getElementById('cmd-from-json').style.display = 'none';
+  }
+
+  function toggleJsonPaste() {
+    const open = document.getElementById('json-paste-open');
+    const collapsed = document.getElementById('json-paste-collapsed');
+    const btn = document.getElementById('json-paste-toggle');
+    const isOpen = open.style.display !== 'none';
+    open.style.display = isOpen ? 'none' : 'block';
+    collapsed.style.display = isOpen ? 'block' : 'none';
+    btn.textContent = isOpen ? 'Expand' : 'Collapse';
+  }
+
+  function onJsonInput(raw) {
+    const errEl = document.getElementById('json-parse-error');
+    if (!raw.trim()) { errEl.style.display = 'none'; return; }
+    try {
+      const parsed = JSON.parse(raw);
+      const cfg = extractServerConfig(parsed);
+      fillFromJson(cfg);
+      errEl.style.display = 'none';
+    } catch (e) {
+      errEl.textContent = 'Invalid JSON: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  function extractServerConfig(parsed) {
+    // Format 1: { mcpServers: { Name: { ... } } }  — Claude Desktop / standard
+    if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+      const entries = Object.entries(parsed.mcpServers);
+      if (!entries.length) throw new Error('No servers in mcpServers');
+      const [name, cfg] = entries[0];
+      return { _name: name, ...cfg };
+    }
+
+    // Format 2: bare server object { command, args, env } or { url } or { transport: { url } }
+    if (parsed.command || parsed.args || parsed.url || parsed.transport) {
+      return parsed;
+    }
+
+    // Format 3: { Name: { command/args/url/transport, ... } }  — no mcpServers wrapper
+    const entries = Object.entries(parsed);
+    if (entries.length >= 1) {
+      const [name, cfg] = entries[0];
+      if (cfg && typeof cfg === 'object' && (cfg.command || cfg.args || cfg.url || cfg.transport)) {
+        return { _name: name, ...cfg };
+      }
+    }
+
+    throw new Error('Unrecognised config format');
+  }
+
+  function _isPlaceholder(v) {
+    if (typeof v !== 'string') return false;
+    const l = v.toLowerCase();
+    return l.startsWith('insert') || l.startsWith('optional') || l.startsWith('your-') ||
+           l.startsWith('your_') || l.startsWith('<your') || l.includes('such as') ||
+           l.includes('api host') || l.includes('xxx') || l === 'string' ||
+           l.includes('local-output') || l.includes('dir-path') || l.includes('here');
+  }
+
+  function fillFromJson(obj) {
+    if (obj._name) document.getElementById('srv-name').value = obj._name;
+
+    const isStdio = !!(obj.command || obj.args);
+    // transport.type = "sse" | "http" | "streamable-http" also means HTTP
+    const transportObj = (obj.transport && typeof obj.transport === 'object') ? obj.transport : {};
+    const url = obj.url || transportObj.url || obj.serverUrl || obj.server_url || '';
+
+    if (isStdio) {
+      setTransport('stdio');
+      const cmd = [obj.command, ...(obj.args || [])].filter(Boolean).join(' ');
+      const cmdEl = document.getElementById('srv-command');
+      cmdEl.value = cmd;
+      cmdEl.disabled = true;
+      cmdEl.style.opacity = '0.6';
+      document.getElementById('cmd-from-json').style.display = 'inline';
+      document.getElementById('env-vars-list').innerHTML = '';
+      for (const [k, v] of Object.entries(obj.env || {})) {
+        addEnvRow(k, _isPlaceholder(v) ? '' : v);
+      }
+    } else if (url) {
+      setTransport('http');
+      document.getElementById('srv-url').value = url;
+    }
+  }
+
+  // Transport selector
+  function setTransport(t) {
+    currentTransport = t;
+    document.getElementById('tab-http').classList.toggle('active', t === 'http');
+    document.getElementById('tab-stdio').classList.toggle('active', t === 'stdio');
+    document.querySelector('#tab-http input').checked = t === 'http';
+    document.querySelector('#tab-stdio input').checked = t === 'stdio';
+    const httpF = document.getElementById('fields-http');
+    const stdioF = document.getElementById('fields-stdio');
+    httpF.style.cssText = t === 'http' ? 'display:flex; flex-direction:column; gap:14px;' : 'display:none;';
+    stdioF.style.cssText = t === 'stdio' ? 'display:flex; flex-direction:column; gap:14px;' : 'display:none;';
+    checkSaveReady();
+  }
+
+  function showAddModal() {
+    editingId = null;
+    document.getElementById('modal-title').textContent = 'Add MCP Server';
+    document.getElementById('modal-save-btn').textContent = 'Connect & Discover Tools';
+    document.getElementById('srv-name').value = '';
+    document.getElementById('srv-url').value = '';
+    document.getElementById('srv-auth-type').value = 'none';
+    document.getElementById('srv-header-name').value = '';
+    document.getElementById('srv-token').value = '';
+    document.getElementById('srv-command').value = '';
+    document.getElementById('env-vars-list').innerHTML = '';
+    document.getElementById('modal-error').style.display = 'none';
+    _resetCommandLock();
+    setTransport('http');
+    onAuthTypeChange();
+    showModal('modal-server');
+  }
+
+  function showEditModal(id) {
+    const srv = servers.find(s => s.id === id);
+    if (!srv) return;
+    editingId = id;
+    document.getElementById('modal-title').textContent = 'Edit MCP Server';
+    document.getElementById('modal-save-btn').textContent = 'Save & Re-sync Tools';
+    document.getElementById('srv-name').value = srv.name;
+    document.getElementById('srv-url').value = srv.server_url || '';
+    document.getElementById('srv-auth-type').value = srv.auth_type || 'none';
+    document.getElementById('srv-header-name').value = srv.auth_header_name || '';
+    document.getElementById('srv-token').value = '';
+    document.getElementById('srv-command').value = srv.command || '';
+    document.getElementById('env-vars-list').innerHTML = '';
+    document.getElementById('modal-error').style.display = 'none';
+    _resetCommandLock();
+    setTransport(srv.transport_type || 'http');
+    onAuthTypeChange();
+    showModal('modal-server');
+  }
+
+  function onAuthTypeChange() {
+    const type = document.getElementById('srv-auth-type').value;
+    document.getElementById('field-token').style.display = type !== 'none' ? 'block' : 'none';
+    document.getElementById('field-header-name').style.display = type === 'api_key' ? 'block' : 'none';
+  }
+
+  // Env vars key-value rows
+  function addEnvRow(key = '', val = '') {
+    const row = document.createElement('div');
+    row.className = 'env-row';
+    row.innerHTML = `
+      <input class="input env-key" placeholder="KEY" value="${esc(key)}" style="font-family:monospace;" oninput="checkSaveReady()">
+      <input class="input env-val" placeholder="value" value="${esc(val)}" type="password" oninput="checkSaveReady()">
+      <button class="btn btn-secondary btn-icon" onclick="this.closest('.env-row').remove(); checkSaveReady();">×</button>`;
+    document.getElementById('env-vars-list').appendChild(row);
+    checkSaveReady();
+  }
+
+  function checkSaveReady() {
+    if (currentTransport !== 'stdio') { setSaveEnabled(true); return; }
+    const rows = document.querySelectorAll('#env-vars-list .env-row');
+    const allFilled = [...rows].every(row =>
+      row.querySelector('.env-key').value.trim() &&
+      row.querySelector('.env-val').value.trim()
+    );
+    setSaveEnabled(allFilled);
+  }
+
+  function setSaveEnabled(enabled) {
+    const btn = document.getElementById('modal-save-btn');
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? '' : '0.45';
+    btn.title = enabled ? '' : 'Fill in all environment variable values first';
+  }
+
+  function collectEnvVars() {
+    const rows = document.querySelectorAll('#env-vars-list .env-row');
+    const result = {};
+    rows.forEach(row => {
+      const k = row.querySelector('.env-key').value.trim();
+      const v = row.querySelector('.env-val').value;
+      if (k) result[k] = v;
+    });
+    return Object.keys(result).length ? result : null;
+  }
+
+  async function saveServer() {
+    const name = document.getElementById('srv-name').value.trim();
+    const errEl = document.getElementById('modal-error');
+
+    if (!name) { errEl.textContent = 'Name is required.'; errEl.style.display = 'block'; return; }
+
+    let payload = { name, transport_type: currentTransport };
+
+    if (currentTransport === 'http') {
+      const server_url = document.getElementById('srv-url').value.trim();
+      if (!server_url) { errEl.textContent = 'Server URL is required for HTTP transport.'; errEl.style.display = 'block'; return; }
+      payload.server_url = server_url;
+      payload.auth_type = document.getElementById('srv-auth-type').value;
+      const header = document.getElementById('srv-header-name').value.trim();
+      const token = document.getElementById('srv-token').value.trim();
+      if (header) payload.auth_header_name = header;
+      if (token) payload.token = token;
+    } else {
+      const command = document.getElementById('srv-command').value.trim();
+      if (!command) { errEl.textContent = 'Command is required for stdio transport.'; errEl.style.display = 'block'; return; }
+      payload.command = command;
+      const env_vars = collectEnvVars();
+      if (env_vars) payload.env_vars = env_vars;
+    }
+
+    errEl.style.display = 'none';
+    const btn = document.getElementById('modal-save-btn');
+    btn.disabled = true;
+    btn.textContent = 'Connecting…';
+
+    try {
+      if (editingId) {
+        await apiPut(`mcp-servers/${editingId}`, payload);
+      } else {
+        await apiPost('mcp-servers', payload);
+      }
+      hideModal('modal-server');
+      await loadServers();
+    } catch (e) {
+      errEl.textContent = e.message || 'Failed to connect to MCP server.';
+      errEl.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = editingId ? 'Save & Re-sync Tools' : 'Connect & Discover Tools';
+    }
+  }
+
+  function showDeleteModal(id) {
+    deletingId = id;
+    showModal('modal-confirm');
+  }
+
+  async function confirmDelete() {
+    if (!deletingId) return;
+    const btn = document.getElementById('confirm-delete-btn');
+    btn.disabled = true;
+    try {
+      await apiDelete(`mcp-servers/${deletingId}`);
+      hideModal('modal-confirm');
+      await loadServers();
+    } catch (e) {
+      alert(e.message || 'Failed to delete server.');
+    } finally {
+      btn.disabled = false;
+      deletingId = null;
+    }
+  }
+
+  async function syncServer(id) {
+    const btn = document.getElementById(`sync-btn-${id}`);
+    btn.disabled = true;
+    btn.textContent = 'Syncing…';
+    try {
+      const srv = await apiPost(`mcp-servers/${id}/sync`, {});
+      const idx = servers.findIndex(s => s.id === id);
+      if (idx !== -1) servers[idx] = srv;
+      renderServers();
+    } catch (e) {
+      alert(e.message || 'Sync failed. Check server settings.');
+      btn.disabled = false;
+      btn.textContent = 'Sync';
+    }
+  }
+
+  async function toggleHITL(serverId, toolName, requires_hitl) {
+    try {
+      const srv = await apiPatch(`mcp-servers/${serverId}/tools/${encodeURIComponent(toolName)}/hitl`, { requires_hitl });
+      const idx = servers.findIndex(s => s.id === serverId);
+      if (idx !== -1) servers[idx] = srv;
+    } catch (e) {
+      alert(e.message || 'Failed to update HITL setting.');
+      await loadServers();
+    }
+  }
+
+  function timeSince(isoStr) {
+    const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+    if (secs < 60) return `${secs}s ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+    return `${Math.floor(secs / 86400)}d ago`;
+  }
+
+  init();
+</script>
+</body>
+</html>

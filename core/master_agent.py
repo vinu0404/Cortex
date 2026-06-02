@@ -139,6 +139,8 @@ def _validate_plan(plan: ExecutionPlan, agents_db: dict[str, dict]) -> None:
             raise PlanValidationError(
                 f"Unknown agent '{step.agent_name}' in plan. Known: {sorted(known)}"
             )
+    if len({step.agent_id for step in plan.steps}) != len(plan.steps):
+        raise PlanValidationError("Duplicate agent_id in plan")
     ids = {step.agent_id for step in plan.steps}
     for step in plan.steps:
         for dep in step.depends_on:

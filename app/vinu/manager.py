@@ -334,6 +334,18 @@ async def _build_user_context(user: User, keys: list, db: AsyncSession) -> str:
         for wc in wcs:
             lines.append(f'- "{wc.name}" ({wc.url_count} URLs)')
 
+    from app.mcp_servers.db_models import MCPServer
+    mcp_servers = list(await db.scalars(
+        select(MCPServer).where(MCPServer.user_id == user.id, MCPServer.is_active.is_(True))
+    ))
+    if mcp_servers:
+        lines.append("\nMCP servers connected (tools available to agents):")
+        for srv in mcp_servers:
+            tool_names = [t["name"] for t in (srv.discovered_tools or [])]
+            tool_list = ", ".join(tool_names) if tool_names else "no tools yet"
+            lines.append(f'  - {srv.name} ({srv.server_url}): {tool_list}')
+            lines.append(f'    Use connector_slug: mcp:{srv.id}')
+
     return "\n".join(lines)
 
 

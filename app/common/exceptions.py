@@ -55,3 +55,9 @@ class CircularDependencyError(AppError):
 class PlanValidationError(AppError):
     def __init__(self, message: str):
         super().__init__("PLAN_VALIDATION_ERROR", message, 422)
+
+
+class MCPSubprocessError(AppError):
+    """Raised when a stdio MCP subprocess exits with an error."""
+    def __init__(self, message: str):
+        super().__init__("MCP_SUBPROCESS_ERROR", message, 502)

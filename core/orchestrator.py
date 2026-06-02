@@ -122,10 +122,16 @@ async def _run_agent(
     dependency_outputs = {}
     for dep_id in task.depends_on:
         if dep_id in shared_state:
-            dep_data = shared_state[dep_id].data
-            if dep_data is None:
-                logger.error("Upstream agent %s produced no data; task %s may be incomplete", dep_id, task.agent_id)
-            dependency_outputs[dep_id] = dep_data
+            dep_output = shared_state[dep_id]
+            if not dep_output.task_done:
+                err = (dep_output.error or "upstream agent failed")[:100]
+                logger.warning("Upstream agent %s failed; passing error to %s: %s", dep_id, task.agent_id, err)
+                dependency_outputs[dep_id] = {
+                    "error": err,
+                    "note": "Upstream agent failed. Use your own knowledge and assigned tools to complete your task. Do not hallucinate or make up data.",
+                }
+            else:
+                dependency_outputs[dep_id] = dep_output.data
 
     hitl_context = await _check_hitl(task, agent_def, on_hitl_needed)
 

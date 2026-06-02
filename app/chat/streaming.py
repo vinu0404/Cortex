@@ -590,6 +590,9 @@ async def _load_workspace_context(
             except Exception as e:
                 logger.warning("Token refresh failed for connector '%s': %s", inst.definition.slug, e)
 
+    mcp_ctx = await _load_mcp_context(user_id, db)
+    connector_tokens_db.update(mcp_ctx)
+
     return agents_db, api_keys_db, master_model, master_key, connector_tokens_db
 
 
@@ -613,6 +616,35 @@ async def _get_composer_key(workspace_id: UUID, user_id: UUID, db: AsyncSession)
 
     key = await _fetch_api_key(ApiKeyManager(db), composer.api_key_id, user_id)
     return composer.model_id or settings.DEFAULT_MODEL, key
+
+
+async def _load_mcp_context(user_id: UUID, db: AsyncSession) -> dict:
+    import json
+    from app.connectors.encryption import decrypt_str
+    from app.mcp_servers.db_models import MCPServer
+    rows = list(await db.scalars(
+        select(MCPServer).where(MCPServer.user_id == user_id, MCPServer.is_active.is_(True))
+    ))
+    result: dict = {}
+    for s in rows:
+        token = decrypt_str(s.encrypted_token) if s.encrypted_token else ""
+        env_vars: dict = {}
+        if s.encrypted_env_vars:
+            try:
+                env_vars = json.loads(decrypt_str(s.encrypted_env_vars))
+            except Exception:
+                pass
+        result[f"mcp:{s.id}"] = {
+            "transport_type": s.transport_type,
+            "server_url": s.server_url,
+            "auth_type": s.auth_type,
+            "auth_header_name": s.auth_header_name,
+            "access_token": token,
+            "command": s.command,
+            "env_vars": env_vars,
+            "tools": {t["name"]: t for t in (s.discovered_tools or [])},
+        }
+    return result
 
 
 # Public API for external consumers (Celery tasks, cron runner)

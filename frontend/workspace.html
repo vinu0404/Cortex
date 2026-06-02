@@ -232,13 +232,14 @@
   let editingAgentId = null;
 
   async function init() {
-    const [ws, keys, defs, instances, kbs, wcs] = await Promise.all([
+    const [ws, keys, defs, instances, kbs, wcs, mcpServers] = await Promise.all([
       apiGet(`workspaces/${wsId}`),
       apiGet('api-keys'),
       apiGet('connectors/definitions'),
       apiGet('connectors/instances'),
       apiGet('knowledge-bases').catch(() => []),
       apiGet('website-collections').catch(() => []),
+      apiGet('mcp-servers').catch(() => []),
     ]);
     allKbs = kbs || [];
     allWcs = wcs || [];
@@ -271,6 +272,11 @@
         def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
       }
     }
+    for (const srv of (mcpServers || [])) {
+      for (const t of (srv.discovered_tools || [])) {
+        allTools.push({ name: t.name, description: t.description, connector_slug: `mcp:${srv.id}`, requires_hitl: t.requires_hitl, _mcpGroup: `MCP: ${srv.name}` });
+      }
+    }
 
     renderApiKeys(keys || []);
     renderConnectors(defs || [], instances || []);
@@ -278,9 +284,10 @@
   }
 
   async function reloadConnectors() {
-    const [defs, instances] = await Promise.all([
+    const [defs, instances, mcpServers] = await Promise.all([
       apiGet('connectors/definitions'),
       apiGet('connectors/instances'),
+      apiGet('mcp-servers').catch(() => []),
     ]);
     allInstances = instances || [];
     allTools = [];
@@ -291,6 +298,11 @@
     for (const def of (defs || [])) {
       if (def.auth_type === 'apikey' || def.auth_type === 'internal') {
         def.tools.forEach(t => allTools.push({ ...t, connector_slug: def.slug }));
+      }
+    }
+    for (const srv of (mcpServers || [])) {
+      for (const t of (srv.discovered_tools || [])) {
+        allTools.push({ name: t.name, description: t.description, connector_slug: `mcp:${srv.id}`, requires_hitl: t.requires_hitl, _mcpGroup: `MCP: ${srv.name}` });
       }
     }
     renderConnectors(defs || [], instances || []);

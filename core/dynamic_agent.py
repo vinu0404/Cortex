@@ -89,13 +89,31 @@ def _py_type_to_json(annotation: Any) -> str:
     return _PY_TO_JSON.get(annotation, "string")
 
 
-def _build_tool_schemas(tool_names: list[str]) -> list[dict]:
+def _build_tool_schemas(
+    tool_names: list[str],
+    connector_tokens_db: dict[str, dict] | None = None,
+    tools_config_map: dict[str, str] | None = None,
+) -> list[dict]:
     import inspect
     registry = get_registry()
     schemas = []
-    # deduplicate while preserving order — OpenAI rejects duplicate function names
     tool_names = list(dict.fromkeys(tool_names))
     for name in tool_names:
+        connector_slug = (tools_config_map or {}).get(name, "")
+        if connector_slug.startswith("mcp:"):
+            mcp_ctx = (connector_tokens_db or {}).get(connector_slug, {})
+            tool_def = mcp_ctx.get("tools", {}).get(name)
+            if not tool_def:
+                continue
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": tool_def.get("description", ""),
+                    "parameters": tool_def.get("inputSchema", {"type": "object", "properties": {}}),
+                },
+            })
+            continue
         fn = registry.get_callable(name)
         if not fn:
             continue
@@ -151,7 +169,14 @@ async def run_dynamic_agent(
             error="HITL denied by user",
         )
 
-    tool_schemas = _build_tool_schemas(agent_input.tools) if agent_input.tools else []
+    tools_config_map: dict[str, str] = {
+        tc["tool"]: tc.get("connector_slug", "")
+        for tc in (agent_def.get("tools_config") or [])
+        if isinstance(tc, dict) and tc.get("tool")
+    }
+
+    ctokens = connector_tokens_db or {}
+    tool_schemas = _build_tool_schemas(agent_input.tools, ctokens, tools_config_map) if agent_input.tools else []
     system_prompt = _build_system_prompt(agent_def, agent_input, is_embed=is_embed)
 
     messages = [
@@ -160,9 +185,8 @@ async def run_dynamic_agent(
         {"role": "user", "content": agent_input.task},
     ]
 
-    ctokens = connector_tokens_db or {}
     result_text, tool_results, usage = await _run_with_tools(
-        messages, tool_schemas, model_id, api_key, agent_input, ctokens
+        messages, tool_schemas, model_id, api_key, agent_input, ctokens, tools_config_map
     )
 
     return AgentOutput(
@@ -201,6 +225,7 @@ async def _run_with_tools(
     api_key: str,
     agent_input: AgentInput,
     connector_tokens_db: dict[str, dict],
+    tools_config_map: dict[str, str] | None = None,
 ) -> tuple[str, list[dict], TokenUsage]:
     msgs = list(messages)
     all_tool_results: list[dict] = []
@@ -234,7 +259,7 @@ async def _run_with_tools(
                 cost_usd=total_cost,
             )
 
-        turn_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db)
+        turn_results = await _execute_tool_calls(msg.tool_calls, connector_tokens_db, tools_config_map)
         all_tool_results.extend(turn_results)
 
         msgs.append({
@@ -280,28 +305,40 @@ async def _run_with_tools(
 async def _execute_tool_calls(
     tool_calls: list,
     connector_tokens_db: dict[str, dict],
+    tools_config_map: dict[str, str] | None = None,
 ) -> list[dict]:
     registry = get_registry()
     results = []
     for tc in tool_calls:
         fn_name = tc.function.name
+        connector_slug = (tools_config_map or {}).get(fn_name, "")
+        if connector_slug.startswith("mcp:"):
+            mcp_ctx = connector_tokens_db.get(connector_slug, {})
+            try:
+                args = json.loads(tc.function.arguments)
+                result = await _call_mcp_tool(mcp_ctx, fn_name, args)
+                results.append({"tool": fn_name, "result": result})
+            except Exception as e:
+                logger.exception("MCP tool %s execution failed", fn_name)
+                results.append({"tool": fn_name, "error": f"MCP server unreachable or error: {e}"})
+            continue
         fn = registry.get_callable(fn_name)
         if not fn:
             results.append({"tool": fn_name, "error": "Tool not found"})
             continue
         try:
             args = json.loads(tc.function.arguments)
-            connector_slug = getattr(fn, "connector", "")
-            if connector_slug == "__kb__":
+            slug = getattr(fn, "connector", "")
+            if slug == "__kb__":
                 kb_tokens = connector_tokens_db.get("__kb__", {})
                 args["kb_ids"] = kb_tokens.get("kb_ids", [])
                 args["user_id"] = kb_tokens.get("user_id", "")
-            elif connector_slug == "__website__":
+            elif slug == "__website__":
                 wc_tokens = connector_tokens_db.get("__website__", {})
                 args["collection_ids"] = wc_tokens.get("collection_ids", [])
                 args["user_id"] = wc_tokens.get("user_id", "")
-            elif connector_slug and connector_slug in connector_tokens_db:
-                tokens = connector_tokens_db[connector_slug]
+            elif slug and slug in connector_tokens_db:
+                tokens = connector_tokens_db[slug]
                 args["access_token"] = tokens.get("access_token", "")
                 if "instance_url" in tokens:
                     args["instance_url"] = tokens["instance_url"]
@@ -316,3 +353,86 @@ async def _execute_tool_calls(
             logger.exception("Tool %s execution failed", fn_name)
             results.append({"tool": fn_name, "error": str(e)})
     return results
+
+
+def _is_mcp_retriable(exc: Exception) -> bool:
+    try:
+        import httpx
+        return isinstance(exc, (httpx.ConnectError, httpx.TimeoutException))
+    except ImportError:
+        return False
+
+
+async def _call_mcp_tool(mcp_ctx: dict, tool_name: str, arguments: dict) -> dict:
+    if mcp_ctx.get("transport_type") == "stdio":
+        return await _call_mcp_tool_stdio(mcp_ctx, tool_name, arguments)
+    return await _call_mcp_tool_http(
+        mcp_ctx.get("server_url", ""),
+        mcp_ctx.get("auth_type", "none"),
+        mcp_ctx.get("access_token", ""),
+        mcp_ctx.get("auth_header_name"),
+        tool_name,
+        arguments,
+    )
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential_jitter(initial=1, max=4),
+    retry=retry_if_exception(_is_mcp_retriable),
+    reraise=True,
+)
+async def _call_mcp_tool_http(
+    server_url: str,
+    auth_type: str,
+    token: str,
+    auth_header_name: str | None,
+    tool_name: str,
+    arguments: dict,
+) -> dict:
+    import httpx
+    headers = {"Content-Type": "application/json"}
+    if token:
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+        elif auth_type == "api_key" and auth_header_name:
+            headers[auth_header_name] = token
+    body = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}, "id": 1}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(server_url, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    if "error" in data:
+        err = data["error"]
+        raise RuntimeError(f"MCP error {err.get('code')}: {err.get('message')}")
+    result = data.get("result", {})
+    content = result.get("content", [])
+    text = "\n".join(c.get("text", "") for c in content if c.get("type") == "text")
+    return {"text": text, "raw": result}
+
+
+async def _call_mcp_tool_stdio(mcp_ctx: dict, tool_name: str, arguments: dict) -> dict:
+    import asyncio
+    import shlex
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    parts = shlex.split(mcp_ctx.get("command") or "")
+    if not parts:
+        raise ValueError("stdio MCP server has no command")
+    env = mcp_ctx.get("env_vars") or {}
+    params = StdioServerParameters(command=parts[0], args=parts[1:], env=env or None)
+
+    async def _run():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session.call_tool(tool_name, arguments)
+
+    try:
+        result = await asyncio.wait_for(_run(), timeout=settings.MCP_TOOL_TIMEOUT_SECONDS)
+    except BaseExceptionGroup as eg:
+        from app.common.exceptions import MCPSubprocessError
+        raise MCPSubprocessError(str(eg.exceptions[0])) from eg
+    text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+    return {"text": text, "isError": result.isError}
