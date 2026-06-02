@@ -53,6 +53,8 @@ async def refine_plan(
             timezone=tz,
         )
         return ok(result)
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
     except Exception as e:
         logger.error("refine_plan failed: %s", e, exc_info=True)
         return fail("INTERNAL_ERROR", "Failed to refine plan", 500)

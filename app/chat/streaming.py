@@ -112,6 +112,14 @@ async def chat_stream(
     mem_mgr.load(summaries, recent_messages)
     mem_mgr.add_message("user", query)
 
+    if settings.GUARDRAILS_ENABLED:
+        from app.common.guardrails import BLOCKED_INPUT_MESSAGE, check_input
+        guard = await check_input(query, master_key)
+        if guard.blocked:
+            logger.warning("Input guardrail blocked (category=%s): %.200s", guard.category, query)
+            yield sse_event({"code": "GUARDRAIL_BLOCKED", "message": BLOCKED_INPUT_MESSAGE}, "error")
+            return
+
     if await request.is_disconnected():
         return
 
@@ -294,6 +302,13 @@ async def chat_stream(
         logger.exception("Composer failed for conversation %s", conversation_id)
         yield sse_event({"message": "Composer failed — please retry"}, "error")
         return
+
+    if settings.GUARDRAILS_ENABLED:
+        from app.common.guardrails import SAFE_RESPONSE_FALLBACK, check_output
+        out_guard = await check_output(response_text, composer_key)
+        if out_guard.blocked:
+            logger.warning("Output guardrail blocked response (category=%s)", out_guard.category)
+            response_text = SAFE_RESPONSE_FALLBACK
 
     for char in response_text:
         if await request.is_disconnected():

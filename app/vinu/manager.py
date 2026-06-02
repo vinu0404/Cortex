@@ -250,10 +250,25 @@ async def prepare_chat_response(body: VinuChatRequest, user: User) -> VinuChatRe
                 was_compressed = True
 
     # LLM call — no DB session held during network I/O
+    if settings.GUARDRAILS_ENABLED:
+        from app.common.exceptions import AppError
+        from app.common.guardrails import BLOCKED_INPUT_MESSAGE, check_input
+        guard = await check_input(body.message, api_key)
+        if guard.blocked:
+            logger.warning("Vinu input guardrail blocked (category=%s)", guard.category)
+            raise AppError("GUARDRAIL_BLOCKED", BLOCKED_INPUT_MESSAGE, 400)
+
     system_prompt = _assemble_system_prompt(user, user_context)
     reply, phase, plan, questions = await _call_llm(
         history, system_prompt, body.message, model_id, api_key
     )
+
+    if settings.GUARDRAILS_ENABLED:
+        from app.common.guardrails import SAFE_RESPONSE_FALLBACK, check_output
+        out_guard = await check_output(reply, api_key)
+        if out_guard.blocked:
+            logger.warning("Vinu output guardrail blocked (category=%s)", out_guard.category)
+            reply = SAFE_RESPONSE_FALLBACK
 
     # Title generation
     new_title: str | None = None

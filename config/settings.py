@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     # --- Features ---
     ENABLE_SUGGESTIONS: bool = True
+    GUARDRAILS_ENABLED: bool = True
+    GUARDRAILS_MODEL: str = "gpt-4o-mini"
 
     # --- HITL ---
     HITL_TIMEOUT_SECONDS: int = 120

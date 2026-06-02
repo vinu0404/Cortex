@@ -34,6 +34,14 @@ async def analyze_cron_query(
     try:
         model_id, raw_key = await _resolve_api_key(user)
 
+        if settings.GUARDRAILS_ENABLED:
+            from app.common.guardrails import BLOCKED_INPUT_MESSAGE, check_input
+            guard = await check_input(natural_query, raw_key)
+            if guard.blocked:
+                logger.warning("Cron input guardrail blocked (category=%s)", guard.category)
+                yield _sse("error", {"message": BLOCKED_INPUT_MESSAGE})
+                return
+
         yield _sse("step", {"step": "Detecting schedule", "status": "running"})
         try:
             parsed = await _parse_schedule(natural_query, timezone, model_id, raw_key)
@@ -198,6 +206,15 @@ async def refine_cron_plan(
     from app.cron_jobs.manager import _build_tool_connector_map
 
     model_id, raw_key = await _resolve_api_key(user)
+
+    if settings.GUARDRAILS_ENABLED:
+        from app.common.exceptions import AppError
+        from app.common.guardrails import BLOCKED_INPUT_MESSAGE, check_input
+        guard = await check_input(change_request, raw_key)
+        if guard.blocked:
+            logger.warning("Cron refine guardrail blocked (category=%s)", guard.category)
+            raise AppError("GUARDRAIL_BLOCKED", BLOCKED_INPUT_MESSAGE, 400)
+
     available_tools, kb_context, wc_context = await _load_user_resources(user.id)
 
     prompt = get_compiled_prompt("cron_plan_refiner", {

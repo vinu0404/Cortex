@@ -128,7 +128,7 @@
       { label: 'Agents',           value: s?.agents ?? '—' },
       { label: 'Conversations',    value: s?.conversations ?? '—' },
       { label: 'Messages',         value: s?.messages ?? '—' },
-      { label: 'Cost',             value: s?.total_cost_usd != null ? `$${s.total_cost_usd}` : '—' },
+      { label: 'Cost',             value: s?.total_cost_usd != null ? `$${s.total_cost_usd.toFixed(4)}` : '—' },
       { label: 'Knowledge Bases',  value: s?.knowledge_bases ?? '—' },
       { label: 'Web Collections',  value: s?.website_collections ?? '—' },
       { label: 'Connectors',       value: s?.active_connectors ?? '—' },
