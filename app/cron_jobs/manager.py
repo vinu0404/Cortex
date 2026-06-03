@@ -4,12 +4,11 @@ from uuid import UUID
 
 from celery.schedules import crontab
 from redbeat import RedBeatSchedulerEntry
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from croniter import croniter as _croniter
 
-from app.cron_jobs.db_models import CronJob
+from app.cron_jobs.db_models import CronJob, CronJobModelService
 from app.common.exceptions import AppError, ForbiddenError, NotFoundError
 from app.workspaces.manager import WorkspaceManager
 from celery_app import celery_app
@@ -20,17 +19,13 @@ logger = logging.getLogger(__name__)
 class CronJobManager:
     def __init__(self, db: AsyncSession):
         self._db = db
+        self._cron_job_model_service = CronJobModelService(db)
 
     async def list_jobs(self, user_id: UUID) -> list[CronJob]:
-        result = await self._db.scalars(
-            select(CronJob)
-            .where(CronJob.user_id == user_id)
-            .order_by(CronJob.created_at.desc())
-        )
-        return list(result)
+        return await self._cron_job_model_service.list_jobs(user_id)
 
     async def get_job(self, job_id: UUID, user_id: UUID) -> CronJob:
-        job = await self._db.get(CronJob, job_id)
+        job = await self._cron_job_model_service.get_job(job_id)
         if not job:
             raise NotFoundError("CronJob", str(job_id))
         if job.user_id != user_id:
@@ -64,25 +59,22 @@ class CronJobManager:
         # Create custom agents from AI plan so tools are available at run time
         await self._create_planned_agents(ws.id, user_id, agent_plan, api_key_id=api_key_id)
 
-        job = CronJob(
+        job = await self._cron_job_model_service.create_job(
             user_id=user_id,
             workspace_id=ws.id,
             name=name,
             natural_query=natural_query,
             cron_expr=cron_expr,
             human_schedule=human_schedule,
-            timezone=tz,
-            is_active=True,
+            timezone_name=tz,
             task_description=task_description,
             agent_plan=agent_plan,
+            next_run_at=_compute_next_run(cron_expr),
         )
-        job.next_run_at = _compute_next_run(cron_expr)
-        self._db.add(job)
-        await self._db.flush()
 
         # Commit before registering beat — prevents ghost schedules on rollback
-        await self._db.commit()
-        await self._db.refresh(job)
+        await self._cron_job_model_service.save_changes()
+        await self._cron_job_model_service.refresh(job)
         self._register_beat(job)
         return job
 
@@ -129,13 +121,10 @@ class CronJobManager:
 
     async def toggle_job(self, job_id: UUID, user_id: UUID, is_active: bool) -> CronJob:
         job = await self.get_job(job_id, user_id)
-        job.is_active = is_active
-        if is_active:
-            job.next_run_at = _compute_next_run(job.cron_expr)
-        else:
-            job.next_run_at = None
-        await self._db.commit()
-        await self._db.refresh(job)
+        next_run_at = _compute_next_run(job.cron_expr) if is_active else None
+        await self._cron_job_model_service.set_job_active(job, is_active, next_run_at)
+        await self._cron_job_model_service.save_changes()
+        await self._cron_job_model_service.refresh(job)
         # Beat registration/deletion after commit only
         if is_active:
             self._register_beat(job)
@@ -158,14 +147,16 @@ class CronJobManager:
         job = await self.get_job(job_id, user_id)
         # Delete old beat before updating to avoid stale schedule
         self._delete_beat(str(job_id))
-        job.natural_query = natural_query
-        job.cron_expr = cron_expr
-        job.human_schedule = human_schedule
-        if timezone is not None:
-            job.timezone = timezone
-        job.next_run_at = _compute_next_run(cron_expr)
-        await self._db.commit()
-        await self._db.refresh(job)
+        await self._cron_job_model_service.update_job_schedule(
+            job,
+            natural_query,
+            cron_expr,
+            human_schedule,
+            timezone,
+            _compute_next_run(cron_expr),
+        )
+        await self._cron_job_model_service.save_changes()
+        await self._cron_job_model_service.refresh(job)
         if job.is_active:
             self._register_beat(job)
         return job
@@ -178,16 +169,16 @@ class CronJobManager:
         except Exception as exc:
             logger.warning("Could not soft-delete workspace %s for cron job %s: %s",
                            job.workspace_id, job_id, exc)
-        await self._db.delete(job)
-        await self._db.commit()
+        await self._cron_job_model_service.delete_job(job)
+        await self._cron_job_model_service.save_changes()
 
     async def run_now(self, job_id: UUID, user_id: UUID) -> CronJob:
         from app.cron_jobs.tasks import run_cron_job_task
         job = await self.get_job(job_id, user_id)
         result = run_cron_job_task.delay(str(job_id))
-        job.celery_task_id = result.id
-        await self._db.commit()
-        await self._db.refresh(job)
+        await self._cron_job_model_service.set_celery_task_id(job, result.id)
+        await self._cron_job_model_service.save_changes()
+        await self._cron_job_model_service.refresh(job)
         return job
 
     def _register_beat(self, job: CronJob) -> None:

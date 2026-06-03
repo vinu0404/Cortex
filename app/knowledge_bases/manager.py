@@ -12,6 +12,7 @@ from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.knowledge_bases.db_models import (
     AgentKnowledgeBase,
     KbDocument,
+    KnowledgeBaseModelService,
     KbProcessingStatusEnum,
     KbSourceTypeEnum,
     KnowledgeBase,
@@ -38,37 +39,26 @@ _REINDEXABLE_STATUSES = {
 class KnowledgeBaseManager:
     def __init__(self, db: AsyncSession):
         self._db = db
+        self._kb_model_service = KnowledgeBaseModelService(db)
 
     # -----------------------------------------------------------------------
     # Knowledge Bases
     # -----------------------------------------------------------------------
 
     async def list_kbs(self, user_id: UUID) -> list[KnowledgeBase]:
-        result = await self._db.scalars(
-            select(KnowledgeBase)
-            .where(KnowledgeBase.user_id == user_id)
-            .order_by(KnowledgeBase.created_at.desc())
-        )
-        return list(result)
+        return await self._kb_model_service.list_kbs(user_id)
 
     async def create_kb(self, user_id: UUID, name: str, description: str | None) -> KnowledgeBase:
-        kb = KnowledgeBase(user_id=user_id, name=name, description=description)
-        self._db.add(kb)
         try:
-            await self._db.flush()
+            return await self._kb_model_service.create_kb(user_id, name, description)
         except IntegrityError as e:
-            await self._db.rollback()
+            await self._kb_model_service.undo_changes()
             raise ConflictError(f'A knowledge base named "{name}" already exists.') from e
-        return kb
 
     async def delete_kb(self, kb_id: UUID, user_id: UUID) -> None:
-        kb = await self._get_kb(kb_id, user_id)
-        docs_result = await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb_id))
-        docs = list(docs_result)
-
-        # commit DB first — if external cleanup fails, KB is still gone
-        await self._db.delete(kb)
-        await self._db.commit()
+        kb = await self._kb_model_service.get_kb(kb_id, user_id)
+        docs = await self._kb_model_service.delete_kb(kb)
+        await self._kb_model_service.save_changes()
 
         # B2 delete is sync boto3 — must run in executor to avoid blocking event loop
         loop = asyncio.get_running_loop()
@@ -85,13 +75,8 @@ class KnowledgeBaseManager:
     # -----------------------------------------------------------------------
 
     async def list_documents(self, kb_id: UUID, user_id: UUID) -> list[KbDocument]:
-        await self._get_kb(kb_id, user_id)
-        result = await self._db.scalars(
-            select(KbDocument)
-            .where(KbDocument.kb_id == kb_id)
-            .order_by(KbDocument.created_at.desc())
-        )
-        return list(result)
+        await self._kb_model_service.get_kb(kb_id, user_id)
+        return await self._kb_model_service.list_documents(kb_id)
 
     async def presign_upload(
         self,
@@ -105,7 +90,7 @@ class KnowledgeBaseManager:
         from app.knowledge_bases.models import PresignUploadResponse
         from document_pipeline.storage import build_kb_storage_key, generate_presigned_put_url
 
-        await self._get_kb(kb_id, user_id)
+        await self._kb_model_service.get_kb(kb_id, user_id)
 
         ext = Path(filename).suffix.lower()
         if ext not in settings.KB_SUPPORTED_EXTENSIONS:
@@ -115,12 +100,7 @@ class KnowledgeBaseManager:
 
         # Hash-based duplicate / resume check
         if file_hash:
-            existing = await self._db.scalar(
-                select(KbDocument)
-                .where(KbDocument.kb_id == kb_id, KbDocument.file_hash == file_hash)
-                .order_by(KbDocument.created_at.desc())
-                .limit(1)
-            )
+            existing = await self._kb_model_service.find_doc_by_hash(kb_id, file_hash)
             if existing:
                 if existing.processing_status != KbProcessingStatusEnum.pending_upload:
                     return PresignUploadResponse(
@@ -142,7 +122,7 @@ class KnowledgeBaseManager:
         doc_id = uuid.uuid4()
         storage_key = build_kb_storage_key(str(kb_id), str(doc_id), filename)
 
-        doc = KbDocument(
+        doc = await self._kb_model_service.create_document(
             id=doc_id,
             kb_id=kb_id,
             user_id=user_id,
@@ -155,8 +135,7 @@ class KnowledgeBaseManager:
             source_type=KbSourceTypeEnum.device,
             processing_status=KbProcessingStatusEnum.pending_upload,
         )
-        self._db.add(doc)
-        await self._db.commit()
+        await self._kb_model_service.save_changes()
 
         upload_url = generate_presigned_put_url(storage_key, content_type)
         return PresignUploadResponse(
@@ -169,17 +148,17 @@ class KnowledgeBaseManager:
         )
 
     async def confirm_upload(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
-        doc = await self._get_doc(kb_id, doc_id, user_id)
+        doc = await self._kb_model_service.get_doc(kb_id, doc_id, user_id)
         if doc.processing_status != KbProcessingStatusEnum.pending_upload:
             raise ConflictError("Document is not awaiting upload confirmation")
 
-        doc.processing_status = KbProcessingStatusEnum.pending
-        await self._db.commit()
+        await self._kb_model_service.mark_document_pending(doc)
+        await self._kb_model_service.save_changes()
 
         from document_pipeline.tasks import process_document_task
         result = process_document_task.delay(str(doc_id))
-        doc.celery_task_id = result.id
-        await self._db.commit()
+        await self._kb_model_service.set_document_task(doc, result.id)
+        await self._kb_model_service.save_changes()
         return doc
 
     async def ingest_from_s3(
@@ -192,13 +171,13 @@ class KnowledgeBaseManager:
         secret_access_key: str | None,
         region: str | None,
     ) -> KbDocument:
-        await self._get_kb(kb_id, user_id)
+        await self._kb_model_service.get_kb(kb_id, user_id)
 
         ext = Path(filename).suffix.lower()
         if ext not in settings.KB_SUPPORTED_EXTENSIONS:
             raise ConflictError(f"Unsupported extension: {ext}")
 
-        doc = KbDocument(
+        doc = await self._kb_model_service.create_document(
             kb_id=kb_id,
             user_id=user_id,
             filename=filename,
@@ -206,9 +185,7 @@ class KnowledgeBaseManager:
             source_url=url,  # store for retry
             processing_status=KbProcessingStatusEnum.pending,
         )
-        self._db.add(doc)
-        # commit before Celery dispatch
-        await self._db.commit()
+        await self._kb_model_service.save_changes()
 
         creds = {}
         if access_key_id:
@@ -218,27 +195,15 @@ class KnowledgeBaseManager:
 
         from document_pipeline.tasks import ingest_from_s3_task
         result = ingest_from_s3_task.delay(str(doc.id), url, creds)
-        doc.celery_task_id = result.id
-        await self._db.commit()
+        await self._kb_model_service.set_document_task(doc, result.id)
+        await self._kb_model_service.save_changes()
 
         return doc
 
     async def delete_document(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> None:
-        doc = await self._get_doc(kb_id, doc_id, user_id)
-
-        # decrement document_count atomically (only if doc was fully indexed)
-        if doc.processing_status == KbProcessingStatusEnum.ready:
-            await self._db.execute(
-                update(KnowledgeBase)
-                .where(KnowledgeBase.id == doc.kb_id)
-                .values(document_count=KnowledgeBase.document_count - 1)
-            )
-
-        task_id = doc.celery_task_id
-        storage_key = doc.storage_key
-        # commit DB first — if external cleanup fails, doc is still gone
-        await self._db.delete(doc)
-        await self._db.commit()
+        doc = await self._kb_model_service.get_doc(kb_id, doc_id, user_id)
+        task_id, storage_key = await self._kb_model_service.delete_document(doc)
+        await self._kb_model_service.save_changes()
 
         if task_id:
             try:
@@ -257,14 +222,12 @@ class KnowledgeBaseManager:
         await vector_store.delete_document_chunks(str(kb_id), str(doc_id))
 
     async def retry_document(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
-        doc = await self._get_doc(kb_id, doc_id, user_id)
+        doc = await self._kb_model_service.get_doc(kb_id, doc_id, user_id)
         if doc.processing_status != KbProcessingStatusEnum.failed:
             raise ConflictError("Only failed documents can be retried")
 
-        doc.processing_status = KbProcessingStatusEnum.pending
-        doc.error_message = None
-        # commit before dispatch
-        await self._db.commit()
+        await self._kb_model_service.mark_document_for_retry(doc)
+        await self._kb_model_service.save_changes()
 
         # dispatch correct task based on source_type
         if doc.source_type == KbSourceTypeEnum.s3_url:
@@ -274,19 +237,17 @@ class KnowledgeBaseManager:
             from document_pipeline.tasks import process_document_task
             result = process_document_task.delay(str(doc_id))
 
-        doc.celery_task_id = result.id
-        await self._db.commit()
+        await self._kb_model_service.set_document_task(doc, result.id)
+        await self._kb_model_service.save_changes()
         return doc
 
     async def cancel_document(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
-        doc = await self._get_doc(kb_id, doc_id, user_id)
+        doc = await self._kb_model_service.get_doc(kb_id, doc_id, user_id)
         if doc.processing_status not in _CANCELLABLE_STATUSES:
             raise ConflictError("Document cannot be cancelled in its current state")
 
-        task_id = doc.celery_task_id
-        doc.processing_status = KbProcessingStatusEnum.cancelled
-        doc.celery_task_id = None
-        await self._db.commit()
+        doc, task_id = await self._kb_model_service.cancel_document(doc)
+        await self._kb_model_service.save_changes()
 
         if task_id:
             from celery_app import celery_app
@@ -296,9 +257,8 @@ class KnowledgeBaseManager:
 
     async def reindex_kb(self, kb_id: UUID, user_id: UUID) -> int:
         """Re-process all ready/failed/cancelled docs. Surgical: only deletes chunks for targeted docs."""
-        await self._get_kb(kb_id, user_id)
-        docs_result = await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb_id))
-        docs = list(docs_result)
+        await self._kb_model_service.get_kb(kb_id, user_id)
+        docs = await self._kb_model_service.list_docs_for_reindex(kb_id)
 
         to_dispatch: list[KbDocument] = []
         ready_count_delta = 0
@@ -317,13 +277,9 @@ class KnowledgeBaseManager:
             to_dispatch.append(doc)
 
         if ready_count_delta:
-            await self._db.execute(
-                update(KnowledgeBase)
-                .where(KnowledgeBase.id == kb_id)
-                .values(document_count=KnowledgeBase.document_count - ready_count_delta)
-            )
+            await self._kb_model_service.adjust_document_count(kb_id, ready_count_delta)
 
-        await self._db.commit()
+        await self._kb_model_service.save_changes()
 
         from document_pipeline.tasks import process_document_task, ingest_from_s3_task
         for doc in to_dispatch:
@@ -331,13 +287,13 @@ class KnowledgeBaseManager:
                 result = ingest_from_s3_task.delay(str(doc.id), doc.source_url or "", {})
             else:
                 result = process_document_task.delay(str(doc.id))
-            doc.celery_task_id = result.id
-        await self._db.commit()
+            await self._kb_model_service.set_document_task(doc, result.id)
+        await self._kb_model_service.save_changes()
 
         return len(to_dispatch)
 
     async def get_presigned_url(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> dict:
-        doc = await self._get_doc(kb_id, doc_id, user_id)
+        doc = await self._kb_model_service.get_doc(kb_id, doc_id, user_id)
         if not doc.storage_key:
             raise NotFoundError("Document", str(doc_id))
 
@@ -354,40 +310,10 @@ class KnowledgeBaseManager:
     # -----------------------------------------------------------------------
 
     async def set_agent_kbs(self, agent_id: UUID, kb_ids: list[UUID]) -> None:
-        result = await self._db.scalars(
-            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id)
-        )
-        for existing in result:
-            await self._db.delete(existing)
-        for kb_id in kb_ids:
-            self._db.add(AgentKnowledgeBase(agent_id=agent_id, kb_id=kb_id))
-        await self._db.flush()
+        await self._kb_model_service.set_agent_kbs(agent_id, kb_ids)
 
     async def get_kb_ids_for_agent(self, agent_id: UUID) -> list[UUID]:
-        result = await self._db.scalars(
-            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id)
-        )
-        return [row.kb_id for row in result]
-
-    # -----------------------------------------------------------------------
-    # Helpers
-    # -----------------------------------------------------------------------
-
-    async def _get_kb(self, kb_id: UUID, user_id: UUID) -> KnowledgeBase:
-        kb = await self._db.get(KnowledgeBase, kb_id)
-        if not kb:
-            raise NotFoundError("KnowledgeBase", str(kb_id))
-        if kb.user_id != user_id:
-            raise ForbiddenError("Access denied")
-        return kb
-
-    async def _get_doc(self, kb_id: UUID, doc_id: UUID, user_id: UUID) -> KbDocument:
-        doc = await self._db.get(KbDocument, doc_id)
-        if not doc or doc.kb_id != kb_id:
-            raise NotFoundError("KbDocument", str(doc_id))
-        if doc.user_id != user_id:
-            raise ForbiddenError("Access denied")
-        return doc
+        return await self._kb_model_service.get_kb_ids_for_agent(agent_id)
 
 
 def _delete_b2_file(storage_key: str) -> None:

@@ -2,8 +2,10 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import and_, select
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.session import Base
@@ -59,3 +61,80 @@ class Agent(Base):
     agent_personas: Mapped[list["AgentPersona"]] = relationship(
         "AgentPersona", back_populates="agent", cascade="all, delete-orphan"
     )
+
+
+class AgentModelService:
+    def __init__(self, db: AsyncSession):
+        self._db = db
+
+    async def list_agents(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> list[Agent]:
+        result = await self._db.scalars(
+            select(Agent)
+            .where(and_(
+                Agent.workspace_id == workspace_id,
+                Agent.user_id == user_id,
+                Agent.deleted_at.is_(None),
+            ))
+            .order_by(Agent.display_order)
+        )
+        return list(result)
+
+    async def create_agent(
+        self,
+        *,
+        workspace_id: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str,
+        system_prompt: str | None,
+        model_id: str | None,
+        api_key_id: uuid.UUID | None,
+        display_order: int,
+        tools_config: list[dict],
+        agent_type: AgentTypeEnum = AgentTypeEnum.CUSTOM,
+    ) -> Agent:
+        agent = Agent(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            name=name,
+            system_prompt=system_prompt,
+            agent_type=agent_type,
+            model_id=model_id,
+            api_key_id=api_key_id,
+            display_order=display_order,
+            tools_config=tools_config,
+        )
+        self._db.add(agent)
+        await self._db.flush()
+        return agent
+
+    async def get_agent(self, agent_id: uuid.UUID) -> Agent | None:
+        return await self._db.get(Agent, agent_id)
+
+    async def update_agent_fields(self, agent: Agent, **kwargs) -> Agent:
+        for field, value in kwargs.items():
+            if value is not None:
+                setattr(agent, field, value)
+        agent.updated_at = datetime.now(timezone.utc)
+        await self._db.flush()
+        return agent
+
+    async def list_agent_website_collection_links(self, agent_ids: list[uuid.UUID]) -> list:
+        if not agent_ids:
+            return []
+        from app.website_collections.db_models import AgentWebsiteCollection
+
+        return list(await self._db.scalars(
+            select(AgentWebsiteCollection).where(AgentWebsiteCollection.agent_id.in_(agent_ids))
+        ))
+
+    async def list_agent_knowledge_base_links(self, agent_ids: list[uuid.UUID]) -> list:
+        if not agent_ids:
+            return []
+        from app.knowledge_bases.db_models import AgentKnowledgeBase
+
+        return list(await self._db.scalars(
+            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
+        ))
+
+    async def soft_delete_agent(self, agent: Agent, deleted_at: datetime) -> None:
+        agent.deleted_at = deleted_at

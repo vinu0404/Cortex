@@ -71,7 +71,6 @@ async def connect_credentials(
             db_type=body.db_type,
             label=body.label,
         )
-        await db.commit()
         return ok({"id": str(instance.id), "slug": slug, "account_label": instance.account_label}, status_code=201)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)

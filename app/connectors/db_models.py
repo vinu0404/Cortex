@@ -2,9 +2,13 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, delete, select
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.common.exceptions import ConflictError, NotFoundError
 
 from database.session import Base
 
@@ -83,3 +87,127 @@ class ConnectorInstance(Base):
     definition: Mapped["ConnectorDefinition"] = relationship(
         "ConnectorDefinition", back_populates="instances"
     )
+
+
+class ConnectorModelService:
+    def __init__(self, db: AsyncSession):
+        self._db = db
+
+    async def get_definition(self, slug: str) -> ConnectorDefinition:
+        defn = await self._db.scalar(
+            select(ConnectorDefinition).where(ConnectorDefinition.slug == slug)
+        )
+        if not defn:
+            raise NotFoundError("ConnectorDefinition", slug)
+        return defn
+
+    async def seed_definition(self, definition: dict) -> None:
+        existing = await self._db.scalar(
+            select(ConnectorDefinition).where(ConnectorDefinition.slug == definition["slug"])
+        )
+        if not existing:
+            self._db.add(ConnectorDefinition(**definition))
+
+    async def flush_seed(self) -> None:
+        await self._db.flush()
+
+    async def list_definitions(self) -> list[ConnectorDefinition]:
+        return list(
+            await self._db.scalars(
+                select(ConnectorDefinition).where(ConnectorDefinition.is_active.is_(True))
+            )
+        )
+
+    async def list_user_instances(self, user_id: uuid.UUID) -> list[ConnectorInstance]:
+        from sqlalchemy.orm import selectinload
+
+        return list(
+            await self._db.scalars(
+                select(ConnectorInstance)
+                .where(ConnectorInstance.user_id == user_id)
+                .where(ConnectorInstance.status == ConnectorStatusEnum.active)
+                .options(selectinload(ConnectorInstance.definition))
+            )
+        )
+
+    async def create_instance(
+        self,
+        *,
+        user_id: uuid.UUID,
+        definition_id: uuid.UUID,
+        encrypted_tokens: str,
+        account_label: str | None,
+        status: ConnectorStatusEnum,
+        token_expires_at: datetime | None,
+    ) -> ConnectorInstance:
+        instance = ConnectorInstance(
+            user_id=user_id,
+            definition_id=definition_id,
+            encrypted_tokens=encrypted_tokens,
+            account_label=account_label,
+            status=status,
+            token_expires_at=token_expires_at,
+        )
+        self._db.add(instance)
+        try:
+            await self._db.flush()
+        except IntegrityError as e:
+            raise ConflictError("Connector already connected") from e
+        return instance
+
+    async def replace_credentials_instance(
+        self,
+        *,
+        user_id: uuid.UUID,
+        definition_id: uuid.UUID,
+        encrypted_tokens: str,
+        account_label: str | None,
+    ) -> ConnectorInstance:
+        await self._db.execute(
+            delete(ConnectorInstance).where(
+                ConnectorInstance.user_id == user_id,
+                ConnectorInstance.definition_id == definition_id,
+            )
+        )
+        instance = ConnectorInstance(
+            user_id=user_id,
+            definition_id=definition_id,
+            encrypted_tokens=encrypted_tokens,
+            account_label=account_label,
+            status=ConnectorStatusEnum.active,
+        )
+        self._db.add(instance)
+        await self._db.flush()
+        await self._db.commit()
+        await self._db.refresh(instance)
+        return instance
+
+    async def get_instance_for_user(
+        self,
+        instance_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> ConnectorInstance:
+        instance = await self._db.get(ConnectorInstance, instance_id)
+        if not instance or instance.user_id != user_id:
+            raise NotFoundError("ConnectorInstance", str(instance_id))
+        return instance
+
+    async def delete_instance(self, instance: ConnectorInstance) -> None:
+        await self._db.delete(instance)
+
+    async def update_instance_tokens(
+        self,
+        instance: ConnectorInstance,
+        encrypted_tokens: str,
+        token_expires_at: datetime | None,
+    ) -> None:
+        instance.encrypted_tokens = encrypted_tokens
+        instance.token_expires_at = token_expires_at
+        instance.updated_at = datetime.now(timezone.utc)
+        await self._db.flush()
+
+    async def save_changes(self) -> None:
+        await self._db.commit()
+
+    async def refresh(self, instance) -> None:
+        await self._db.refresh(instance)

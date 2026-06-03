@@ -1,6 +1,6 @@
 /* Shared utilities: auth, API client, toasts */
 
-const API = '/';
+const API = '/api/v1/';
 
 // ---- Timezone ----
 let _appTimezone = (function() {
@@ -74,13 +74,13 @@ async function _parseApiResponse(resp) {
   } catch {
     throw new Error(`Server error (${resp.status}) — please try again.`);
   }
-  if (data.status === 'ok') return data.data;
+  if (data.success === true || data.status === 'ok') return data.data;
   // FastAPI RequestValidationError or our VALIDATION_ERROR code
   if (Array.isArray(data.detail)) {
     const msg = data.detail.map(e => e.msg || String(e)).join('; ');
     throw new Error(msg || 'Validation error');
   }
-  const msg = data.message || data.detail || `Request failed (${resp.status})`;
+  const msg = data.error?.message || data.message || data.detail || `Request failed (${resp.status})`;
   throw new Error(typeof msg === 'string' ? msg : 'Request failed');
 }
 
@@ -178,7 +178,8 @@ async function* sseStream(path, body) {
     let msg = `Request failed (${resp.status})`;
     try {
       const err = await resp.json();
-      if (err.message) msg = err.message;
+      if (err.error?.message) msg = err.error.message;
+      else if (err.message) msg = err.message;
       else if (err.detail) msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail);
     } catch {}
     throw new Error(msg);
@@ -261,3 +262,154 @@ function confirmDialog({ title, message, confirmText = 'Delete', confirmClass = 
   btn.onclick = () => { hideModal('confirm-modal'); onConfirm(); };
   showModal('confirm-modal');
 }
+
+// ---- Ambient canvas graphic ----
+function initCortexAmbientCanvas() {
+  if (document.getElementById('cortex-bg-canvas')) return;
+  if (document.body.classList.contains('chat-page') || document.getElementById('chat-orchestration-canvas')) return;
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.id = 'cortex-bg-canvas';
+  canvas.className = 'cortex-bg-canvas';
+  canvas.setAttribute('aria-hidden', 'true');
+  document.body.prepend(canvas);
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  let width = 0;
+  let height = 0;
+  let dpr = 1;
+  const dust = Array.from({ length: 26 }, (_, index) => ({
+    seed: index + 1,
+    drift: 0.14 + (index % 7) * 0.02,
+    phase: index * 0.37,
+  }));
+  const stageBlueprint = [
+    [{ label: 'Intent', group: 'system' }],
+    [{ label: 'Route', group: 'agent' }, { label: 'Memory', group: 'agent' }],
+    [{ label: 'Tools', group: 'agent' }, { label: 'Search', group: 'agent' }, { label: 'Context', group: 'agent' }],
+    [{ label: 'Compose', group: 'system' }],
+  ];
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function layout(time) {
+    const insetX = 78;
+    const insetY = 68;
+    const centerY = height * 0.46;
+    const usableW = Math.max(width - insetX * 2, 240);
+    const colGap = stageBlueprint.length > 1 ? usableW / (stageBlueprint.length - 1) : 0;
+    const waveAmp = Math.min(96, height * 0.12);
+
+    return stageBlueprint.map((column, colIndex) => {
+      const anchorX = insetX + colGap * colIndex;
+      const curveT = stageBlueprint.length > 1 ? colIndex / (stageBlueprint.length - 1) : 0.5;
+      const anchorY = centerY + Math.sin(curveT * Math.PI * 1.18 - 0.5) * waveAmp;
+      return column.map((node, rowIndex) => {
+        const spread = column.length > 1 ? (rowIndex - (column.length - 1) / 2) : 0;
+        const orbital = time * 0.00045 + colIndex * 0.7 + rowIndex * 0.9;
+        return {
+          ...node,
+          stageIndex: colIndex,
+          x: anchorX + Math.sin(orbital) * (14 + Math.abs(spread) * 9),
+          y: Math.min(height - insetY, Math.max(insetY, anchorY + spread * 74 + Math.cos(orbital * 1.35) * (20 + Math.abs(spread) * 7))),
+        };
+      });
+    });
+  }
+
+  function draw(time) {
+    ctx.clearRect(0, 0, width, height);
+    const columns = layout(time);
+    const flat = columns.flat();
+    const edges = [];
+
+    dust.forEach((point, index) => {
+      const x = ((time * point.drift * 18) + point.seed * 97) % (width + 120) - 60;
+      const y = height * (0.16 + (index % 9) * 0.078) + Math.sin(time * 0.0004 + point.phase) * 18;
+      ctx.fillStyle = 'rgba(17,17,17,0.05)';
+      ctx.beginPath();
+      ctx.arc(x, y, 1.3 + (index % 3) * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    for (let c = 0; c < columns.length - 1; c += 1) {
+      columns[c].forEach((from, fromIdx) => {
+        columns[c + 1].forEach((to, toIdx) => {
+          edges.push({ from, to, index: edges.length + fromIdx + toIdx, nearby: false });
+        });
+      });
+    }
+
+    flat.forEach((from, fromIndex) => {
+      for (let i = fromIndex + 1; i < flat.length; i += 1) {
+        const to = flat[i];
+        const dist = Math.hypot(from.x - to.x, from.y - to.y);
+        const stageGap = Math.abs((from.stageIndex || 0) - (to.stageIndex || 0));
+        if (stageGap > 2 || dist > 210) continue;
+        edges.push({ from, to, index: edges.length + fromIndex + i, nearby: true });
+      }
+    });
+
+    edges.forEach(edge => {
+      const energetic = edge.from.group === 'system' || edge.to.group === 'system';
+      const cx1 = edge.from.x + (edge.nearby ? 0 : 78) + Math.sin(edge.index * 0.6) * (edge.nearby ? 18 : 11);
+      const cy1 = edge.from.y + (edge.nearby ? -22 : 0);
+      const cx2 = edge.to.x - (edge.nearby ? 0 : 78) + Math.cos(edge.index * 0.5) * (edge.nearby ? 18 : 11);
+      const cy2 = edge.to.y + (edge.nearby ? 22 : 0);
+      ctx.strokeStyle = energetic ? 'rgba(17,17,17,0.14)' : edge.nearby ? 'rgba(17,17,17,0.06)' : 'rgba(17,17,17,0.08)';
+      ctx.lineWidth = energetic ? 1.15 : edge.nearby ? 0.9 : 1;
+      ctx.beginPath();
+      ctx.moveTo(edge.from.x, edge.from.y);
+      ctx.bezierCurveTo(cx1, cy1, cx2, cy2, edge.to.x, edge.to.y);
+      ctx.stroke();
+
+      const pulse = ((time * 0.00016) + edge.index * 0.09) % 1;
+      const x = cubicPoint(edge.from.x, cx1, cx2, edge.to.x, pulse);
+      const y = cubicPoint(edge.from.y, cy1, cy2, edge.to.y, pulse);
+      ctx.fillStyle = energetic ? 'rgba(17,17,17,0.2)' : 'rgba(17,17,17,0.11)';
+      ctx.beginPath();
+      ctx.arc(x, y, energetic ? 2.6 : 1.9, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    flat.forEach((node, index) => {
+      const pulse = 0.82 + Math.sin(time * 0.001 + index) * 0.07;
+      const radius = node.group === 'system' ? 8.8 : 6.8;
+      ctx.fillStyle = node.group === 'system' ? 'rgba(17,17,17,0.34)' : 'rgba(17,17,17,0.2)';
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius * pulse, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, Math.max(radius - 3.2, 2.4), 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    requestAnimationFrame(draw);
+  }
+
+  function cubicPoint(p0, p1, p2, p3, t) {
+    const inv = 1 - t;
+    return (inv ** 3) * p0 + 3 * (inv ** 2) * t * p1 + 3 * inv * (t ** 2) * p2 + (t ** 3) * p3;
+  }
+
+  resize();
+  window.addEventListener('resize', resize, { passive: true });
+  requestAnimationFrame(draw);
+}
+
+document.addEventListener('DOMContentLoaded', initCortexAmbientCanvas);

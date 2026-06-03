@@ -69,15 +69,15 @@ async def wc_status_stream(token: str) -> StreamingResponse:
                     await asyncio.sleep(1)
                     try:
                         await pubsub.subscribe(channel)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("Website collection status stream resubscribe failed: %s", exc)
                     continue
                 if message and message["type"] == "message":
                     yield f"data: {message['data']}\n\n"
                 else:
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:
-            pass
+            logger.debug("Website collection status stream client disconnected")
         finally:
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()

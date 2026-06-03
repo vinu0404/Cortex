@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Agent Builder</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     .agent-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); }
     .agent-card.system { background:var(--surface); border-style:dashed; }
@@ -217,7 +217,7 @@
   </div>
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script>
   requireAuth();
   const wsId = new URLSearchParams(location.search).get('id');

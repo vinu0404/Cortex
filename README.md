@@ -1296,148 +1296,166 @@ Reusing `access_token` as the param name for connection strings means zero chang
 
 ## API Endpoints
 
-### Auth — `/auth`
+All backend API routes are mounted under `API_VERSION`, defaulting to:
+
+```text
+/api/v1
+```
+
+HTML pages, `/static`, `/health`, and public embed page URLs remain unversioned.
+
+### Auth — `/api/v1/auth`
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| `POST` | `/auth/register` | Public | Returns access + refresh tokens |
-| `POST` | `/auth/login` | Public | Returns access + refresh tokens |
-| `POST` | `/auth/refresh` | Bearer | Returns new access + refresh tokens |
-| `POST` | `/auth/logout` | Bearer | Blacklists access token in Redis |
-| `GET` | `/auth/me` | Bearer | Current user profile |
-| `GET` | `/auth/me/stats` | Bearer | 8 counters: workspaces, agents, conversations, messages, total_cost_usd, knowledge_bases, website_collections, active_connectors |
-| `GET` | `/auth/me/recent-conversations` | Bearer | `?limit=` (1–50). Latest conversations across all workspaces |
+| `POST` | `/api/v1/auth/register` | Public | Returns access + refresh tokens |
+| `POST` | `/api/v1/auth/login` | Public | Returns access + refresh tokens |
+| `POST` | `/api/v1/auth/refresh` | Bearer | Returns new access + refresh tokens |
+| `POST` | `/api/v1/auth/logout` | Bearer | Blacklists access token in Redis |
+| `GET` | `/api/v1/auth/me` | Bearer | Current user profile |
+| `PATCH` | `/api/v1/auth/me` | Bearer | Update current user profile |
+| `GET` | `/api/v1/auth/me/stats` | Bearer | 8 counters: workspaces, agents, conversations, messages, total_cost_usd, knowledge_bases, website_collections, active_connectors |
+| `GET` | `/api/v1/auth/me/recent-conversations` | Bearer | `?limit=` (1–50). Latest conversations across all workspaces |
 
-### Workspaces — `/workspaces`
-
-| Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/workspaces` | Cursor paginated |
-| `POST` | `/workspaces` | Auto-creates Master + Composer agents |
-| `GET` | `/workspaces/{id}` | |
-| `PUT` | `/workspaces/{id}` | |
-| `DELETE` | `/workspaces/{id}` | Soft delete |
-| `POST` | `/workspaces/{id}/embed/enable` | Generate embed token + return iframe snippet |
-| `DELETE` | `/workspaces/{id}/embed` | Disable embed (token preserved, re-enable restores same URL) |
-| `PATCH` | `/workspaces/{id}/embed` | Update `embed_hitl_auto_approve` and/or `embed_disable_on_budget` |
-| `GET` | `/workspaces/{id}/stats` | `{conversation_count, message_count, total_cost_usd}` |
-| `GET` | `/workspaces/{id}/conversations` | `?limit=&offset=` — owner views all conversations + per-conversation cost |
-
-### Agents — `/agents`
+### Workspaces — `/api/v1/workspaces`
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/workspaces/{id}/agents` | Returns `kb_ids`, `collection_ids` per agent |
-| `POST` | `/workspaces/{id}/agents` | Accepts `kb_ids`, `collection_ids` |
-| `PUT` | `/agents/{id}` | Updates KB/WC assignments via junction tables |
-| `DELETE` | `/agents/{id}` | Soft delete |
-| `POST` | `/workspaces/{id}/agents/prompt-generate` | AI prompt + tool suggestions |
+| `GET` | `/api/v1/workspaces` | Cursor paginated |
+| `POST` | `/api/v1/workspaces` | Auto-creates Master + Composer agents |
+| `GET` | `/api/v1/workspaces/{id}` | |
+| `PUT` | `/api/v1/workspaces/{id}` | |
+| `DELETE` | `/api/v1/workspaces/{id}` | Soft delete |
+| `POST` | `/api/v1/workspaces/{id}/embed/enable` | Generate embed token + return iframe snippet |
+| `DELETE` | `/api/v1/workspaces/{id}/embed` | Disable embed (token preserved, re-enable restores same URL) |
+| `PATCH` | `/api/v1/workspaces/{id}/embed` | Update embed HITL and budget settings |
+| `GET` | `/api/v1/workspaces/{id}/stats` | `{conversation_count, message_count, total_cost_usd}` |
+| `GET` | `/api/v1/workspaces/{id}/conversations` | `?limit=&offset=` — owner views all conversations + per-conversation cost |
 
-### Knowledge Bases — `/knowledge-bases`
-
-| Method | Path | Notes |
-|--------|------|-------|
-| `POST` | `/knowledge-bases` | Create KB |
-| `GET` | `/knowledge-bases` | List user's KBs |
-| `DELETE` | `/knowledge-bases/{kb_id}` | Delete KB + Qdrant collection |
-| `POST` | `/knowledge-bases/{kb_id}/upload` | Upload files (multipart) — enqueues Celery task per file |
-| `GET` | `/knowledge-bases/{kb_id}/documents` | List documents with status |
-| `DELETE` | `/knowledge-bases/{kb_id}/documents/{doc_id}` | Delete doc + Qdrant chunks |
-| `POST` | `/knowledge-bases/{kb_id}/documents/{doc_id}/retry` | Re-queue failed document |
-| `GET` | `/knowledge-bases/status/stream` | SSE — `?token=` auth |
-
-### Website Collections — `/website-collections`
+### Agents
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `POST` | `/website-collections` | Create collection |
-| `GET` | `/website-collections` | List user's collections |
-| `DELETE` | `/website-collections/{collection_id}` | Delete + Qdrant collection |
-| `POST` | `/website-collections/{collection_id}/urls` | Add URL — body: `{url, max_depth}` |
-| `GET` | `/website-collections/{collection_id}/urls` | List URLs with crawl status |
-| `DELETE` | `/website-collections/{collection_id}/urls/{url_id}` | Remove URL + Qdrant chunks |
-| `POST` | `/website-collections/{collection_id}/urls/{url_id}/scrape` | Trigger crawl for one URL |
-| `POST` | `/website-collections/{collection_id}/scrape` | Trigger crawl for all URLs |
-| `POST` | `/website-collections/{collection_id}/urls/{url_id}/retry` | Re-queue failed URL |
-| `GET` | `/website-collections/status/stream` | SSE — `?token=` auth — registered before `/{collection_id}` |
+| `GET` | `/api/v1/workspaces/{id}/agents` | Returns `kb_ids`, `collection_ids` per agent |
+| `POST` | `/api/v1/workspaces/{id}/agents` | Accepts `kb_ids`, `collection_ids` |
+| `PUT` | `/api/v1/agents/{id}` | Updates KB/WC assignments via junction tables |
+| `DELETE` | `/api/v1/agents/{id}` | Soft delete |
+| `POST` | `/api/v1/workspaces/{id}/agents/prompt-generate` | AI prompt + tool suggestions |
 
-### Connectors — `/connectors`
+### Knowledge Bases — `/api/v1/knowledge-bases`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/api/v1/knowledge-bases` | Create KB |
+| `GET` | `/api/v1/knowledge-bases` | List user's KBs |
+| `DELETE` | `/api/v1/knowledge-bases/{kb_id}` | Delete KB + Qdrant collection |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/presign` | Create presigned upload target |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/confirm` | Confirm uploaded document and enqueue processing |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/from-s3` | Register an already uploaded S3 object |
+| `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | List documents with status |
+| `DELETE` | `/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}` | Delete doc + Qdrant chunks |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/cancel` | Cancel queued/processing document |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/reindex` | Reindex all documents |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/retry` | Re-queue failed document |
+| `GET` | `/api/v1/knowledge-bases/{kb_id}/documents/{doc_id}/view` | Presigned document view URL |
+| `GET` | `/api/v1/knowledge-bases/status/stream` | SSE — `?token=` auth |
+
+### Website Collections — `/api/v1/website-collections`
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/api/v1/website-collections` | Create collection |
+| `GET` | `/api/v1/website-collections` | List user's collections |
+| `DELETE` | `/api/v1/website-collections/{collection_id}` | Delete + Qdrant collection |
+| `POST` | `/api/v1/website-collections/{collection_id}/urls` | Add URL — body: `{url, max_depth}` |
+| `GET` | `/api/v1/website-collections/{collection_id}/urls` | List URLs with crawl status |
+| `GET` | `/api/v1/website-collections/{collection_id}/urls/{url_id}/chunks` | List indexed chunks |
+| `DELETE` | `/api/v1/website-collections/{collection_id}/urls/{url_id}` | Remove URL + Qdrant chunks |
+| `POST` | `/api/v1/website-collections/{collection_id}/urls/{url_id}/scrape` | Trigger crawl for one URL |
+| `POST` | `/api/v1/website-collections/{collection_id}/scrape` | Trigger crawl for all URLs |
+| `POST` | `/api/v1/website-collections/{collection_id}/urls/{url_id}/retry` | Re-queue failed URL |
+| `POST` | `/api/v1/website-collections/{collection_id}/urls/{url_id}/cancel` | Cancel queued/processing URL |
+| `POST` | `/api/v1/website-collections/{collection_id}/reindex` | Reindex collection |
+| `GET` | `/api/v1/website-collections/status/stream` | SSE — `?token=` auth |
+
+### Connectors — `/api/v1/connectors`
 
 | Method | Path |
 |--------|------|
-| `GET` | `/connectors/definitions` |
-| `GET` | `/connectors/instances` |
-| `GET` | `/connectors/{slug}/auth-url` |
-| `GET` | `/connectors/callback` |
-| `DELETE` | `/connectors/instances/{id}` |
+| `GET` | `/api/v1/connectors/definitions` |
+| `GET` | `/api/v1/connectors/instances` |
+| `POST` | `/api/v1/connectors/{slug}/connect` |
+| `GET` | `/api/v1/connectors/{slug}/auth-url` |
+| `GET` | `/api/v1/connectors/callback` |
+| `DELETE` | `/api/v1/connectors/instances/{id}` |
 
-### API Keys — `/api-keys`
+### API Keys — `/api/v1/api-keys`
 
 | Method | Path |
 |--------|------|
-| `POST` | `/api-keys` |
-| `GET` | `/api-keys` |
-| `GET` | `/api-keys/{id}/models` |
-| `DELETE` | `/api-keys/{id}` |
+| `POST` | `/api/v1/api-keys` |
+| `GET` | `/api/v1/api-keys` |
+| `GET` | `/api/v1/api-keys/{id}/models` |
+| `DELETE` | `/api/v1/api-keys/{id}` |
 
-### Chat — `/chat`
+### Chat — `/api/v1/chat`
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `POST` | `/chat/conversations` | Create for workspace |
-| `GET` | `/chat/conversations` | Cursor paginated (`?cursor=&limit=`) |
-| `GET` | `/chat/conversations/{id}/messages` | Cursor paginated — `?cursor=&limit=` — returns `{messages, has_more, prev_cursor}`. Send `prev_cursor` back as `?cursor=` to load older messages (scroll-up pagination) |
-| `POST` | `/chat/artifacts` | Save PDF or CSV artifact to B2 storage. Body: `{message_id, conversation_id, type, title, filename, content}`. Returns `{id, url}`. Idempotent — returns existing artifact if already saved for that `message_id + type` |
-| `POST` | `/chat/stream` | Main SSE execution endpoint |
-| `POST` | `/hitl/respond` | Approve/deny → Redis publish |
+| `POST` | `/api/v1/chat/conversations` | Create for workspace |
+| `GET` | `/api/v1/chat/conversations` | Cursor paginated (`?cursor=&limit=`) |
+| `GET` | `/api/v1/chat/conversations/{id}/messages` | Cursor paginated — `?cursor=&limit=` — returns `{messages, has_more, prev_cursor}`. Send `prev_cursor` back as `?cursor=` to load older messages (scroll-up pagination) |
+| `POST` | `/api/v1/chat/artifacts` | Save PDF or CSV artifact to B2 storage. Body: `{message_id, conversation_id, type, title, filename, content}`. Returns `{id, url}`. Idempotent — returns existing artifact if already saved for that `message_id + type` |
+| `POST` | `/api/v1/chat/stream` | Main SSE execution endpoint |
+| `POST` | `/api/v1/hitl/respond` | Approve/deny → Redis publish |
 
-### Personas
+### Personas — `/api/v1/personas`
 
 | Method | Path |
 |--------|------|
-| `POST` | `/personas` |
-| `GET` | `/personas` |
-| `DELETE` | `/personas/{id}` |
+| `POST` | `/api/v1/personas` |
+| `GET` | `/api/v1/personas` |
+| `DELETE` | `/api/v1/personas/{id}` |
 
-### Admin — `/admin` (role=admin required)
+### Admin — `/api/v1/admin` (role=admin required)
 
 Non-admin users are redirected to index. All list endpoints support `?cursor=&limit=`.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/admin/stats` | System-wide totals: users, workspaces, conversations, messages |
-| `PATCH` | `/admin/users/{id}` | Toggle `role` (admin/user) or `is_active` |
+| `GET` | `/api/v1/admin/stats` | System-wide totals: users, workspaces, conversations, messages |
+| `PATCH` | `/api/v1/admin/users/{id}` | Toggle `role` (admin/user) or `is_active` |
 
 **Cursor-paginated tables** (returns `{items, next_cursor, has_next}`):
 
 | Endpoint | Columns returned |
 |----------|-----------------|
-| `GET /admin/users` | id, email, role, is_active, created_at |
-| `GET /admin/workspaces` | id, user_id, name, created_at |
-| `GET /admin/conversations` | id, user_id, workspace_id, title, created_at |
-| `GET /admin/agents` | id, workspace_id, name, agent_type, model_id, deleted_at, created_at |
-| `GET /admin/personas` | id, user_id, name, created_at |
-| `GET /admin/messages` | id, conversation_id, role, content (first 100 chars), total_cost_usd, latency_ms, created_at |
-| `GET /admin/conversation-summaries` | id, conversation_id, message_range_start, message_range_end, created_at |
-| `GET /admin/hitl-requests` | id, conversation_id, agent_id, tool_names, status, expires_at, created_at |
-| `GET /admin/message-artifacts` | id, message_id, user_id, type, title, filename, created_at |
-| `GET /admin/knowledge-bases` | id, user_id, name, document_count, created_at |
-| `GET /admin/kb-documents` | id, kb_id, filename, processing_status, chunk_count, created_at |
-| `GET /admin/website-collections` | id, user_id, name, url_count, created_at |
-| `GET /admin/website-urls` | id, collection_id, url, crawl_status, page_count, chunk_count, created_at |
-| `GET /admin/connector-definitions` | id, slug, display_name, auth_type, is_active, created_at |
-| `GET /admin/connector-instances` | id, user_id, definition_id, account_label, status, token_expires_at, created_at |
-| `GET /admin/api-keys` | id, user_id, key_name, provider, created_at |
-| `GET /admin/long-term-memory` | id, user_id, critical_facts (truncated), preferences (truncated), updated_at |
-| `GET /admin/refresh-tokens` | id, user_id, expires_at, revoked_at, created_at |
+| `GET /api/v1/admin/users` | id, email, role, is_active, created_at |
+| `GET /api/v1/admin/workspaces` | id, user_id, name, created_at |
+| `GET /api/v1/admin/conversations` | id, user_id, workspace_id, title, created_at |
+| `GET /api/v1/admin/agents` | id, workspace_id, name, agent_type, model_id, deleted_at, created_at |
+| `GET /api/v1/admin/personas` | id, user_id, name, created_at |
+| `GET /api/v1/admin/messages` | id, conversation_id, role, content (first 100 chars), total_cost_usd, latency_ms, created_at |
+| `GET /api/v1/admin/conversation-summaries` | id, conversation_id, message_range_start, message_range_end, created_at |
+| `GET /api/v1/admin/hitl-requests` | id, conversation_id, agent_id, tool_names, status, expires_at, created_at |
+| `GET /api/v1/admin/message-artifacts` | id, message_id, conversation_id, user_id, type, title, filename, created_at |
+| `GET /api/v1/admin/knowledge-bases` | id, user_id, name, document_count, created_at |
+| `GET /api/v1/admin/kb-documents` | id, kb_id, user_id, filename, processing_status, chunk_count, created_at |
+| `GET /api/v1/admin/website-collections` | id, user_id, name, url_count, created_at |
+| `GET /api/v1/admin/website-urls` | id, collection_id, user_id, url, crawl_status, page_count, chunk_count, created_at |
+| `GET /api/v1/admin/connector-definitions` | id, slug, display_name, auth_type, is_active, created_at |
+| `GET /api/v1/admin/connector-instances` | id, user_id, definition_id, account_label, status, token_expires_at, created_at |
+| `GET /api/v1/admin/api-keys` | id, user_id, key_name, provider, created_at |
+| `GET /api/v1/admin/long-term-memory` | id, user_id, critical_facts (truncated), preferences (truncated), updated_at |
+| `GET /api/v1/admin/refresh-tokens` | id, user_id, expires_at, revoked_at, created_at |
 
 **Junction tables** (`?limit=500`, no cursor):
 
 | Endpoint | Columns |
 |----------|---------|
-| `GET /admin/agent-kbs` | agent_id, kb_id |
-| `GET /admin/agent-personas` | agent_id, persona_id |
-| `GET /admin/agent-website-collections` | agent_id, collection_id |
+| `GET /api/v1/admin/agent-kbs` | agent_id, kb_id |
+| `GET /api/v1/admin/agent-personas` | agent_id, persona_id |
+| `GET /api/v1/admin/agent-website-collections` | agent_id, collection_id |
 
 ---
 

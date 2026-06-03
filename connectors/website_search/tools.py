@@ -59,6 +59,8 @@ async def collection_search(
             "url": item.get("url", ""),
             "title": item.get("title", ""),
             "depth": item.get("depth", 0),
+            "web_collection_id": item.get("collection_id", ""),
+            "url_id": item.get("url_id", ""),
             "excerpt": text[:300] + "..." if len(text) > 300 else text,
             "relevance_score": round(float(item.get("score", 0)), 4),
         })
@@ -68,7 +70,13 @@ async def collection_search(
         "query": query,
         "collection_ids_searched": collection_ids,
         "sources": [
-            {"type": "website", "title": r.get("title") or r["url"], "url": r["url"]}
+            {
+                "type": "website",
+                "title": r.get("title") or r["url"],
+                "url": r["url"],
+                "web_collection_id": r.get("web_collection_id"),
+                "url_id": r.get("url_id"),
+            }
             for r in results if r.get("url")
         ],
     }

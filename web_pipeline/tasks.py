@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from celery_app import celery_app
+from app.common.retry import async_redis_call
 from config.settings import get_settings
 
 settings = get_settings()
@@ -138,8 +139,8 @@ async def _run_crawl_pipeline(url_id: str) -> None:
         finally:
             try:
                 os.unlink(output_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to remove crawler output file %s: %s", output_path, exc)
 
         pages = [item for item in items if not item.get("login_blocked")]
         blocked = [item for item in items if item.get("login_blocked")]
@@ -287,6 +288,6 @@ async def _publish_wc_status(
     if error_message:
         payload["error_message"] = error_message
     try:
-        await redis_client.publish(f"wc_status:{user_id}", json.dumps(payload))
+        await async_redis_call(redis_client, "publish", f"wc_status:{user_id}", json.dumps(payload))
     except Exception:
         logger.error("Failed to publish WC status: %s", payload)

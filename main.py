@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import os
 
 from app.auth.controller import router as auth_router
@@ -18,7 +19,9 @@ from app.api_keys.controller import router as api_keys_router
 from app.personas.controller import router as personas_router
 from app.chat.controller import router as chat_router
 from app.cron_jobs.controller import router as cron_jobs_router
+from app.common.health import check_database, check_redis, readiness_payload
 from app.common.middleware import RequestContextMiddleware
+from app.common.api_response import fail, ok
 from config.settings import get_settings
 from database.session import engine
 from app.common.exceptions import AppError
@@ -37,8 +40,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     litellm.success_callback = ["langfuse"]
     litellm.failure_callback = ["langfuse"]
     litellm.set_verbose = False
-    litellm.suppress_debug_info = True  # silences "Give Feedback / Get Help" prints
-    # Suppress LiteLLM's internal loggers — they flood stdout with full request/response JSON
+    litellm.suppress_debug_info = True
     for _log_name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
         logging.getLogger(_log_name).setLevel(logging.WARNING)
 
@@ -86,62 +88,70 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
     for e in exc.errors():
         loc = " → ".join(str(l) for l in e["loc"] if l != "body")
         msgs.append(f"{loc}: {e['msg']}" if loc else e["msg"])
-    return JSONResponse(
-        status_code=422,
-        content={"status": "error", "code": "VALIDATION_ERROR", "message": "; ".join(msgs)},
-    )
+    return fail("VALIDATION_ERROR", "; ".join(msgs), 422, details=exc.errors())
 
 
 @app.exception_handler(AppError)
 async def _app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"status": "error", "code": exc.code, "message": exc.message},
-    )
+    return fail(exc.code, exc.message, exc.status_code)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    message = exc.detail if isinstance(exc.detail, str) else "Request failed"
+    return fail("HTTP_ERROR", message, exc.status_code, details=exc.detail)
 
 
 @app.exception_handler(Exception)
 async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
-    return JSONResponse(
-        status_code=500,
-        content={"status": "error", "code": "INTERNAL_ERROR", "message": "An unexpected error occurred. Please try again."},
-    )
+    return fail("INTERNAL_ERROR", "An unexpected error occurred. Please try again.", 500)
 
 # ---- API Routers ----
-app.include_router(auth_router, prefix="/auth", tags=["auth"])
-app.include_router(workspaces_router, prefix="/workspaces", tags=["workspaces"])
-app.include_router(agents_router, tags=["agents"])
-app.include_router(connectors_router, prefix="/connectors", tags=["connectors"])
-app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
-app.include_router(personas_router, prefix="/personas", tags=["personas"])
-app.include_router(chat_router, tags=["chat"])
-app.include_router(cron_jobs_router, prefix="/cron-jobs", tags=["cron-jobs"])
+api_prefix = f"/api/{settings.API_VERSION}"
+app.include_router(auth_router, prefix=f"{api_prefix}/auth", tags=["auth"])
+app.include_router(workspaces_router, prefix=f"{api_prefix}/workspaces", tags=["workspaces"])
+app.include_router(agents_router, prefix=api_prefix, tags=["agents"])
+app.include_router(connectors_router, prefix=f"{api_prefix}/connectors", tags=["connectors"])
+app.include_router(api_keys_router, prefix=f"{api_prefix}/api-keys", tags=["api-keys"])
+app.include_router(personas_router, prefix=f"{api_prefix}/personas", tags=["personas"])
+app.include_router(chat_router, prefix=api_prefix, tags=["chat"])
+app.include_router(cron_jobs_router, prefix=f"{api_prefix}/cron-jobs", tags=["cron-jobs"])
 
 # ---- Admin Router ----
 from app.admin.controller import router as admin_router
-app.include_router(admin_router, prefix="/admin", tags=["admin"])
+app.include_router(admin_router, prefix=f"{api_prefix}/admin", tags=["admin"])
 
 from app.knowledge_bases.controller import router as knowledge_bases_router
-app.include_router(knowledge_bases_router, tags=["knowledge-bases"])
+app.include_router(knowledge_bases_router, prefix=api_prefix, tags=["knowledge-bases"])
 
 from app.website_collections.controller import router as website_collections_router
-app.include_router(website_collections_router, tags=["website-collections"])
+app.include_router(website_collections_router, prefix=api_prefix, tags=["website-collections"])
 
-from app.embed.controller import router as embed_router
-app.include_router(embed_router, tags=["embed"])
+from app.embed.controller import public_router as public_embed_router, router as embed_router
+app.include_router(embed_router, prefix=api_prefix, tags=["embed"])
+app.include_router(public_embed_router, tags=["embed"])
 
 from app.vinu.controller import router as vinu_router
-app.include_router(vinu_router, prefix="/vinu", tags=["vinu"])
+app.include_router(vinu_router, prefix=f"{api_prefix}/vinu", tags=["vinu"])
 
 from app.mcp_servers.controller import router as mcp_servers_router
-app.include_router(mcp_servers_router, prefix="/mcp-servers", tags=["mcp-servers"])
+app.include_router(mcp_servers_router, prefix=f"{api_prefix}/mcp-servers", tags=["mcp-servers"])
 
 
 # ---- Health & Frontend ----
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "environment": settings.ENVIRONMENT}
+async def health() -> JSONResponse:
+    return ok({"environment": settings.ENVIRONMENT}, message="Service is alive")
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    checks = [await check_database(), await check_redis()]
+    payload = readiness_payload(checks)
+    if payload["status"] == "ok":
+        return ok(payload, message="Service is ready")
+    return fail("NOT_READY", "Service dependencies are not ready", 503, details=payload)
 
 
 @app.get("/auth.html")

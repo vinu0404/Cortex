@@ -5,11 +5,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.connectors.db_models import ConnectorDefinition, ConnectorInstance, ConnectorStatusEnum
+from app.connectors.db_models import ConnectorDefinition, ConnectorInstance, ConnectorModelService, ConnectorStatusEnum
 from app.connectors.encryption import decrypt_json, encrypt_json
 from app.common.exceptions import ConflictError, NotFoundError
+from app.common.retry import async_redis_call
 
 logger = logging.getLogger(__name__)
 
@@ -132,50 +132,38 @@ def _save_token_expiry(instance: ConnectorInstance, tokens: dict) -> None:
 class ConnectorManager:
     def __init__(self, db: AsyncSession):
         self._db = db
+        self._connector_model_service = ConnectorModelService(db)
 
     async def seed_definitions(self) -> None:
         for defn in _CONNECTOR_DEFINITIONS:
-            existing = await self._db.scalar(
-                select(ConnectorDefinition).where(ConnectorDefinition.slug == defn["slug"])
-            )
-            if not existing:
-                self._db.add(ConnectorDefinition(**defn))
+            await self._connector_model_service.seed_definition(defn)
         try:
-            await self._db.flush()
+            await self._connector_model_service.flush_seed()
         except IntegrityError as e:
             logger.error("Connector definition seed skipped (already exists): %s", e)
 
     async def list_definitions(self) -> list[ConnectorDefinition]:
-        result = await self._db.scalars(
-            select(ConnectorDefinition).where(ConnectorDefinition.is_active.is_(True))
-        )
-        return list(result)
+        return await self._connector_model_service.list_definitions()
 
     async def list_user_instances(self, user_id: UUID) -> list[ConnectorInstance]:
-        result = await self._db.scalars(
-            select(ConnectorInstance)
-            .where(ConnectorInstance.user_id == user_id)
-            .where(ConnectorInstance.status == ConnectorStatusEnum.active)
-            .options(selectinload(ConnectorInstance.definition))
-        )
-        return list(result)
+        return await self._connector_model_service.list_user_instances(user_id)
 
     async def get_auth_url(self, slug: str, user_id: UUID) -> tuple[str, str]:
         import secrets
         from app.common.redis_client import get_async_redis
-        defn = await self._get_definition(slug)
+        defn = await self._connector_model_service.get_definition(slug)
         if defn.auth_type.value != "oauth2":
             raise ValueError(f"Connector '{slug}' does not use OAuth2")
         connector = self._get_connector_class(slug)()
         state = f"{slug}:{user_id}:{secrets.token_urlsafe(16)}"
         redis = get_async_redis()
-        await redis.setex(f"oauth_state:{state}", 600, "1")
+        await async_redis_call(redis, "setex", f"oauth_state:{state}", 600, "1")
         return connector.get_auth_url(state), state
 
     async def handle_callback(self, code: str, state: str) -> ConnectorInstance:
         from app.common.redis_client import get_async_redis
         redis = get_async_redis()
-        if not await redis.getdel(f"oauth_state:{state}"):
+        if not await async_redis_call(redis, "getdel", f"oauth_state:{state}"):
             raise ValueError("Invalid or expired OAuth state")
 
         parts = state.split(":", 2)
@@ -185,26 +173,26 @@ class ConnectorManager:
         slug, user_id_str = parts[0], parts[1]
         user_id = UUID(user_id_str)
 
-        defn = await self._get_definition(slug)
+        defn = await self._connector_model_service.get_definition(slug)
         connector = self._get_connector_class(slug)()
         tokens = await connector.handle_callback(code, state)
 
-        instance = ConnectorInstance(
-            user_id=user_id,
-            definition_id=defn.id,
-            encrypted_tokens=encrypt_json(tokens),
-            account_label=tokens.get("account_label"),
-            status=ConnectorStatusEnum.active,
-        )
-        _save_token_expiry(instance, tokens)
-        self._db.add(instance)
+        token_expires_at = None
+        expires_in = tokens.get("expires_in")
+        if expires_in and int(expires_in) > 0:
+            token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
         try:
-            await self._db.flush()
-        except IntegrityError as e:
+            return await self._connector_model_service.create_instance(
+                user_id=user_id,
+                definition_id=defn.id,
+                encrypted_tokens=encrypt_json(tokens),
+                account_label=tokens.get("account_label"),
+                status=ConnectorStatusEnum.active,
+                token_expires_at=token_expires_at,
+            )
+        except ConflictError as e:
             logger.error("Failed to create connector instance: %s", e)
-            raise ConflictError("Connector already connected") from e
-
-        return instance
+            raise
 
     async def connect_credentials(
         self,
@@ -214,8 +202,7 @@ class ConnectorManager:
         db_type: str,
         label: str | None = None,
     ) -> ConnectorInstance:
-        from sqlalchemy import delete as sa_delete
-        defn = await self._get_definition(slug)
+        defn = await self._connector_model_service.get_definition(slug)
         if defn.auth_type.value != "credentials":
             from app.common.exceptions import AppError
             raise AppError("CONNECTOR_NOT_CREDENTIALS", "This connector uses OAuth — use the connect flow", 400)
@@ -224,52 +211,37 @@ class ConnectorManager:
         encrypted = encrypt_json(tokens)
         account_label = label or f"{db_type} database"
 
-        await self._db.execute(
-            sa_delete(ConnectorInstance).where(
-                ConnectorInstance.user_id == user_id,
-                ConnectorInstance.definition_id == defn.id,
-            )
-        )
-
-        instance = ConnectorInstance(
+        return await self._connector_model_service.replace_credentials_instance(
             user_id=user_id,
             definition_id=defn.id,
             encrypted_tokens=encrypted,
             account_label=account_label,
-            status=ConnectorStatusEnum.active,
         )
-        self._db.add(instance)
-        await self._db.flush()
-        return instance
 
     async def refresh_connector_tokens(self, instance: ConnectorInstance) -> dict:
         connector = self._get_connector_class(instance.definition.slug)()
         new_tokens = await connector.refresh_access_token(decrypt_json(instance.encrypted_tokens))
-        instance.encrypted_tokens = encrypt_json(new_tokens)
-        _save_token_expiry(instance, new_tokens)
-        instance.updated_at = datetime.now(timezone.utc)
-        await self._db.flush()
+        token_expires_at = None
+        expires_in = new_tokens.get("expires_in")
+        if expires_in and int(expires_in) > 0:
+            token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+        await self._connector_model_service.update_instance_tokens(
+            instance,
+            encrypt_json(new_tokens),
+            token_expires_at,
+        )
         return new_tokens
 
     async def delete_instance(self, instance_id: UUID, user_id: UUID) -> None:
-        instance = await self._db.get(ConnectorInstance, instance_id)
-        if not instance or instance.user_id != user_id:
-            raise NotFoundError("ConnectorInstance", str(instance_id))
-        await self._db.delete(instance)
+        instance = await self._connector_model_service.get_instance_for_user(instance_id, user_id)
+        await self._connector_model_service.delete_instance(instance)
 
     async def get_decrypted_tokens(self, instance_id: UUID, user_id: UUID) -> dict:
-        instance = await self._db.get(ConnectorInstance, instance_id)
-        if not instance or instance.user_id != user_id:
-            raise NotFoundError("ConnectorInstance", str(instance_id))
+        instance = await self._connector_model_service.get_instance_for_user(instance_id, user_id)
         return decrypt_json(instance.encrypted_tokens)
 
     async def _get_definition(self, slug: str) -> ConnectorDefinition:
-        defn = await self._db.scalar(
-            select(ConnectorDefinition).where(ConnectorDefinition.slug == slug)
-        )
-        if not defn:
-            raise NotFoundError("ConnectorDefinition", slug)
-        return defn
+        return await self._connector_model_service.get_definition(slug)
 
     def _get_connector_class(self, slug: str):
         from connectors.gmail.connector import GmailConnector

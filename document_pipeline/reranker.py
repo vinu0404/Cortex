@@ -1,8 +1,8 @@
 import json
 import logging
 
-import litellm
-
+from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 
 settings = get_settings()
@@ -19,14 +19,12 @@ async def rerank(query: str, candidates: list[dict], api_key: str, top_k: int | 
 async def _rerank_llm(query: str, candidates: list[dict], api_key: str, top_k: int) -> list[dict]:
     scored = []
     for candidate in candidates:
-        prompt = (
-            f"Score this passage's relevance to the query on a scale of 1-10.\n"
-            f"Query: {query}\n"
-            f"Passage: {candidate['text'][:500]}\n"
-            f"Respond with only a JSON object: {{\"score\": <number>}}"
+        prompt = get_compiled_prompt(
+            "rag_reranker",
+            {"query": query, "passage": candidate["text"][:500]},
         )
         try:
-            response = await litellm.acompletion(
+            response = await acompletion_with_retry(
                 model=settings.DEFAULT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,

@@ -1,30 +1,15 @@
 import asyncio
 import logging
 
-import litellm
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
+from app.common.retry import aembedding_with_retry
 from config.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
-@retry(
-    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
-    wait=wait_exponential_jitter(initial=1, max=30, jitter=2),
-    retry=retry_if_exception_type((litellm.RateLimitError, litellm.APIConnectionError, litellm.Timeout)),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True,
-)
 async def _embed_batch(texts: list[str], model: str, api_key: str) -> list[list[float]]:
-    response = await litellm.aembedding(model=model, input=texts, api_key=api_key)
+    response = await aembedding_with_retry(model=model, input=texts, api_key=api_key)
     return [item["embedding"] for item in response.data]
 
 

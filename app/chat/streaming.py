@@ -9,10 +9,8 @@ from uuid import UUID
 
 from cryptography.exceptions import InvalidTag
 from fastapi import Request
-from sqlalchemy import and_, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 from tenacity import (
     before_sleep_log,
     retry,
@@ -21,9 +19,9 @@ from tenacity import (
     wait_fixed,
 )
 
-from app.agents.db_models import Agent, AgentTypeEnum
+from app.agents.db_models import AgentTypeEnum
 from app.api_keys.manager import ApiKeyManager
-from app.chat.db_models import MessageRoleEnum
+from app.chat.db_models import ChatModelService, MessageRoleEnum
 from app.chat.manager import ChatManager
 from app.common.exceptions import NotFoundError, PlanValidationError, TokenBudgetExceededError
 from app.common.redis_client import get_async_redis
@@ -511,12 +509,7 @@ async def _fetch_api_key(key_mgr: ApiKeyManager, key_id: UUID, user_id: UUID) ->
     reraise=True,
 )
 async def _fetch_connector_instances(user_id: UUID, db: AsyncSession) -> list:
-    from app.connectors.db_models import ConnectorInstance
-    return list(await db.scalars(
-        select(ConnectorInstance)
-        .where(ConnectorInstance.user_id == user_id)
-        .options(selectinload(ConnectorInstance.definition))
-    ))
+    return await ChatModelService(db).list_connector_instances_for_user(user_id)
 
 
 async def _load_workspace_context(
@@ -524,11 +517,8 @@ async def _load_workspace_context(
 ) -> tuple[dict, dict, str, str, dict]:
     from app.connectors.encryption import decrypt_json
 
-    agents = list(await db.scalars(
-        select(Agent).where(
-            and_(Agent.workspace_id == workspace_id, Agent.deleted_at.is_(None))
-        )
-    ))
+    chat_model_service = ChatModelService(db)
+    agents = await chat_model_service.list_workspace_agents(workspace_id)
 
     key_mgr = ApiKeyManager(db)
     api_keys_db: dict = {}
@@ -537,32 +527,22 @@ async def _load_workspace_context(
     master_key = ""
 
     # Load KB + website collection assignments for all agents in one query each
-    from app.knowledge_bases.db_models import AgentKnowledgeBase
-    from app.website_collections.db_models import AgentWebsiteCollection
     agent_ids = [a.id for a in agents]
-    kb_rows = list(await db.scalars(
-        select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
-    )) if agent_ids else []
+    kb_rows = await chat_model_service.list_agent_knowledge_base_links(agent_ids)
     kb_map: dict = {}
     for row in kb_rows:
         kb_map.setdefault(row.agent_id, []).append(str(row.kb_id))
 
-    wc_rows = list(await db.scalars(
-        select(AgentWebsiteCollection).where(AgentWebsiteCollection.agent_id.in_(agent_ids))
-    )) if agent_ids else []
+    wc_rows = await chat_model_service.list_agent_website_collection_links(agent_ids)
     wc_map: dict = {}
     for row in wc_rows:
         wc_map.setdefault(row.agent_id, []).append(str(row.collection_id))
 
     # Load KB metadata (name + description) for Master agent context
-    from app.knowledge_bases.db_models import KnowledgeBase
-    from app.website_collections.db_models import WebsiteCollection
-
     kb_id_list = [row.kb_id for row in kb_rows]
     kb_meta: dict = {}
-    if kb_id_list:
-        for kb in await db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(kb_id_list))):
-            kb_meta[kb.id] = {"name": kb.name, "description": kb.description or ""}
+    for kb in await chat_model_service.list_knowledge_bases_by_ids(kb_id_list):
+        kb_meta[kb.id] = {"name": kb.name, "description": kb.description or ""}
 
     kb_info_map: dict = {}
     for row in kb_rows:
@@ -573,9 +553,8 @@ async def _load_workspace_context(
     # Load WC metadata (name + description) for Master agent context
     wc_id_list = [row.collection_id for row in wc_rows]
     wc_meta: dict = {}
-    if wc_id_list:
-        for wc in await db.scalars(select(WebsiteCollection).where(WebsiteCollection.id.in_(wc_id_list))):
-            wc_meta[wc.id] = {"name": wc.name, "description": wc.description or ""}
+    for wc in await chat_model_service.list_website_collections_by_ids(wc_id_list):
+        wc_meta[wc.id] = {"name": wc.name, "description": wc.description or ""}
 
     wc_info_map: dict = {}
     for row in wc_rows:
@@ -649,13 +628,7 @@ async def _load_workspace_context(
     reraise=False,
 )
 async def _get_composer_key(workspace_id: UUID, user_id: UUID, db: AsyncSession) -> tuple[str, str]:
-    composer = await db.scalar(
-        select(Agent).where(and_(
-            Agent.workspace_id == workspace_id,
-            Agent.agent_type == AgentTypeEnum.COMPOSER,
-            Agent.deleted_at.is_(None),
-        ))
-    )
+    composer = await ChatModelService(db).get_composer_agent(workspace_id)
     if not composer or not composer.api_key_id:
         return settings.DEFAULT_MODEL, ""
 
@@ -666,10 +639,7 @@ async def _get_composer_key(workspace_id: UUID, user_id: UUID, db: AsyncSession)
 async def _load_mcp_context(user_id: UUID, db: AsyncSession) -> dict:
     import json
     from app.connectors.encryption import decrypt_str
-    from app.mcp_servers.db_models import MCPServer
-    rows = list(await db.scalars(
-        select(MCPServer).where(MCPServer.user_id == user_id, MCPServer.is_active.is_(True))
-    ))
+    rows = await ChatModelService(db).list_active_mcp_servers(user_id)
     result: dict = {}
     for s in rows:
         token = decrypt_str(s.encrypted_token) if s.encrypted_token else ""
@@ -677,8 +647,8 @@ async def _load_mcp_context(user_id: UUID, db: AsyncSession) -> dict:
         if s.encrypted_env_vars:
             try:
                 env_vars = json.loads(decrypt_str(s.encrypted_env_vars))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to decrypt MCP env vars for server %s: %s", s.id, exc)
         result[f"mcp:{s.id}"] = {
             "transport_type": s.transport_type,
             "server_url": s.server_url,
@@ -710,11 +680,10 @@ async def _write_agent_run_record(output: AgentOutput, plan_run_id: UUID, conver
 
 
 async def _load_retry_state(retry_from: dict, conversation_id: UUID) -> tuple:
-    from app.plan_runs.db_models import PlanRun
     plan_run_id = UUID(retry_from["plan_run_id"])
     agent_id = retry_from["agent_id"]
     async with get_custom_db_context_session() as db:
-        plan_run = await db.get(PlanRun, plan_run_id)
+        plan_run = await _plan_run_svc.get_plan_run(db, plan_run_id)
         if not plan_run or plan_run.conversation_id != conversation_id:
             return None, None, None
         retry_count = await _plan_run_svc.count_agent_retries(db, plan_run_id, agent_id)
@@ -753,8 +722,4 @@ get_composer_key = _get_composer_key
 
 
 async def _load_persona(persona_id: UUID, user_id: UUID, db: AsyncSession) -> str | None:
-    from app.personas.db_models import Persona
-    persona = await db.get(Persona, persona_id)
-    if not persona or persona.user_id != user_id:
-        return None
-    return persona.system_prompt
+    return await ChatModelService(db).get_persona_prompt(persona_id, user_id)

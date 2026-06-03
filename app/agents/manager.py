@@ -2,15 +2,14 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-import litellm
-from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.db_models import Agent, AgentTypeEnum
+from app.agents.db_models import Agent, AgentModelService, AgentTypeEnum
 from app.agents.models import PromptGenerateResponse
 from app.common.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from app.connectors.manager import ConnectorManager
 from config.settings import get_settings
 
@@ -21,18 +20,10 @@ logger = logging.getLogger(__name__)
 class AgentManager:
     def __init__(self, db: AsyncSession):
         self._db = db
+        self._agent_model_service = AgentModelService(db)
 
     async def list_agents(self, workspace_id: UUID, user_id: UUID) -> list[Agent]:
-        result = await self._db.scalars(
-            select(Agent)
-            .where(and_(
-                Agent.workspace_id == workspace_id,
-                Agent.user_id == user_id,
-                Agent.deleted_at.is_(None),
-            ))
-            .order_by(Agent.display_order)
-        )
-        return list(result)
+        return await self._agent_model_service.list_agents(workspace_id, user_id)
 
     async def create_agent(
         self,
@@ -50,20 +41,18 @@ class AgentManager:
         from app.workspaces.manager import WorkspaceManager
         await WorkspaceManager(self._db).get_workspace(workspace_id, user_id)
 
-        agent = Agent(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            name=name,
-            system_prompt=system_prompt,
-            agent_type=AgentTypeEnum.CUSTOM,
-            model_id=model_id,
-            api_key_id=api_key_id,
-            display_order=display_order,
-            tools_config=tools_config,
-        )
-        self._db.add(agent)
         try:
-            await self._db.flush()
+            agent = await self._agent_model_service.create_agent(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                name=name,
+                system_prompt=system_prompt,
+                model_id=model_id,
+                api_key_id=api_key_id,
+                display_order=display_order,
+                tools_config=tools_config,
+                agent_type=AgentTypeEnum.CUSTOM,
+            )
         except IntegrityError as e:
             raise ConflictError(f"Agent name '{name}' already exists in this workspace") from e
 
@@ -86,19 +75,10 @@ class AgentManager:
             allowed = {k: v for k, v in kwargs.items() if k in ("model_id", "api_key_id")}
             if not allowed or kb_ids is not None or collection_ids is not None:
                 raise ForbiddenError("Cannot modify system agent")
-            for field, value in allowed.items():
-                if value is not None:
-                    setattr(agent, field, value)
-            agent.updated_at = datetime.now(timezone.utc)
-            await self._db.flush()
-            return agent
+            return await self._agent_model_service.update_agent_fields(agent, **allowed)
 
-        for field, value in kwargs.items():
-            if value is not None:
-                setattr(agent, field, value)
-        agent.updated_at = datetime.now(timezone.utc)
         try:
-            await self._db.flush()
+            await self._agent_model_service.update_agent_fields(agent, **kwargs)
         except IntegrityError as e:
             raise ConflictError("Agent name already exists in this workspace") from e
 
@@ -113,24 +93,14 @@ class AgentManager:
         return agent
 
     async def get_collection_ids_for_agents(self, agent_ids: list[UUID]) -> dict[UUID, list[UUID]]:
-        if not agent_ids:
-            return {}
-        from app.website_collections.db_models import AgentWebsiteCollection
-        rows = list(await self._db.scalars(
-            select(AgentWebsiteCollection).where(AgentWebsiteCollection.agent_id.in_(agent_ids))
-        ))
+        rows = await self._agent_model_service.list_agent_website_collection_links(agent_ids)
         result: dict[UUID, list[UUID]] = {aid: [] for aid in agent_ids}
         for row in rows:
             result[row.agent_id].append(row.collection_id)
         return result
 
     async def get_kb_ids_for_agents(self, agent_ids: list[UUID]) -> dict[UUID, list[UUID]]:
-        if not agent_ids:
-            return {}
-        from app.knowledge_bases.db_models import AgentKnowledgeBase
-        rows = list(await self._db.scalars(
-            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id.in_(agent_ids))
-        ))
+        rows = await self._agent_model_service.list_agent_knowledge_base_links(agent_ids)
         result: dict[UUID, list[UUID]] = {aid: [] for aid in agent_ids}
         for row in rows:
             result[row.agent_id].append(row.kb_id)
@@ -138,7 +108,7 @@ class AgentManager:
 
     async def delete_agent(self, agent_id: UUID, user_id: UUID) -> None:
         agent = await self._get_editable_agent(agent_id, user_id)
-        agent.deleted_at = datetime.now(timezone.utc)
+        await self._agent_model_service.soft_delete_agent(agent, datetime.now(timezone.utc))
 
     async def generate_prompt(
         self,
@@ -174,7 +144,7 @@ class AgentManager:
             "available_tools": tools_context,
         })
 
-        response = await litellm.acompletion(
+        response = await acompletion_with_retry(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
             response_format={"type": "json_object"},
@@ -185,7 +155,7 @@ class AgentManager:
         return PromptGenerateResponse.model_validate_json(response.choices[0].message.content)
 
     async def _get_agent_for_owner(self, agent_id: UUID, user_id: UUID) -> Agent:
-        agent = await self._db.get(Agent, agent_id)
+        agent = await self._agent_model_service.get_agent(agent_id)
         if not agent or agent.deleted_at:
             raise NotFoundError("Agent", str(agent_id))
         if agent.user_id != user_id:
@@ -193,7 +163,7 @@ class AgentManager:
         return agent
 
     async def _get_editable_agent(self, agent_id: UUID, user_id: UUID) -> Agent:
-        agent = await self._db.get(Agent, agent_id)
+        agent = await self._agent_model_service.get_agent(agent_id)
         if not agent or agent.deleted_at:
             raise NotFoundError("Agent", str(agent_id))
         if agent.user_id != user_id:

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Sign In</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -92,7 +92,7 @@
       50%  { left: 150%; }
       100% { left: 150%; }
     }
-    .auth-logo h1 { font-size: 20px; font-weight: 700; letter-spacing: -.5px; color: #111; }
+    .auth-logo h1 { font-size: 20px; font-weight: 700; letter-spacing: 0; color: #111; }
     .auth-logo p  { font-size: 12px; color: #888; margin-top: 3px; }
 
     /* Tabs */
@@ -249,7 +249,7 @@
   </form>
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script>
   if (isLoggedIn()) redirectHome();
 

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # --- Environment ---
     ENVIRONMENT: Literal["dev", "prod"] = "dev"
+    API_VERSION: str = "v1"
 
     # --- LLM ---
     DEFAULT_MODEL: str = "gpt-5"
@@ -67,6 +68,7 @@ class Settings(BaseSettings):
     # --- Orchestration ---
     MAX_AGENT_RETRIES: int = 3
 
+    MCP_DISCOVERY_TIMEOUT_SECONDS: int = 15
     # --- Token budget ---
     TOKEN_BUDGET_ENABLED: bool = True
     USER_DAILY_TOKEN_BUDGET: int = 100_000
@@ -149,15 +151,15 @@ class Settings(BaseSettings):
     # --- OAuth ---
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/connectors/callback"
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/connectors/callback"
 
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
-    GITHUB_REDIRECT_URI: str = "http://localhost:8000/connectors/callback"
+    GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/connectors/callback"
 
     SALESFORCE_CLIENT_ID: str = ""
     SALESFORCE_CLIENT_SECRET: str = ""
-    SALESFORCE_REDIRECT_URI: str = "http://localhost:8000/connectors/callback"
+    SALESFORCE_REDIRECT_URI: str = "http://localhost:8000/api/v1/connectors/callback"
 
     @property
     def is_dev(self) -> bool:

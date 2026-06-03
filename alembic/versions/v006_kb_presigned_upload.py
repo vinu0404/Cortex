@@ -17,4 +17,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass  # PostgreSQL does not support removing enum values
+    op.execute("UPDATE kb_documents SET processing_status = 'pending' WHERE processing_status = 'pending_upload'")
+    op.execute("ALTER TABLE kb_documents ALTER COLUMN processing_status DROP DEFAULT")
+    op.execute("ALTER TYPE kbprocessingstatusenum RENAME TO kbprocessingstatusenum_old")
+    op.execute(
+        "CREATE TYPE kbprocessingstatusenum AS ENUM "
+        "('pending', 'uploading', 'processing', 'ready', 'failed')"
+    )
+    op.execute(
+        "ALTER TABLE kb_documents ALTER COLUMN processing_status TYPE kbprocessingstatusenum "
+        "USING processing_status::text::kbprocessingstatusenum"
+    )
+    op.execute("ALTER TABLE kb_documents ALTER COLUMN processing_status SET DEFAULT 'pending'")
+    op.execute("DROP TYPE kbprocessingstatusenum_old")

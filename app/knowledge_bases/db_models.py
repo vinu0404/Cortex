@@ -2,9 +2,12 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, select, update
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.common.exceptions import ForbiddenError, NotFoundError
 
 from database.session import Base
 
@@ -98,3 +101,128 @@ class AgentKnowledgeBase(Base):
     kb_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
     )
+
+
+class KnowledgeBaseModelService:
+    def __init__(self, db: AsyncSession):
+        self._db = db
+
+    async def list_kbs(self, user_id: uuid.UUID) -> list[KnowledgeBase]:
+        return list(
+            await self._db.scalars(
+                select(KnowledgeBase)
+                .where(KnowledgeBase.user_id == user_id)
+                .order_by(KnowledgeBase.created_at.desc())
+            )
+        )
+
+    async def create_kb(self, user_id: uuid.UUID, name: str, description: str | None) -> KnowledgeBase:
+        kb = KnowledgeBase(user_id=user_id, name=name, description=description)
+        self._db.add(kb)
+        await self._db.flush()
+        return kb
+
+    async def get_kb(self, kb_id: uuid.UUID, user_id: uuid.UUID) -> KnowledgeBase:
+        kb = await self._db.get(KnowledgeBase, kb_id)
+        if not kb:
+            raise NotFoundError("KnowledgeBase", str(kb_id))
+        if kb.user_id != user_id:
+            raise ForbiddenError("Access denied")
+        return kb
+
+    async def list_documents(self, kb_id: uuid.UUID) -> list[KbDocument]:
+        return list(
+            await self._db.scalars(
+                select(KbDocument).where(KbDocument.kb_id == kb_id).order_by(KbDocument.created_at.desc())
+            )
+        )
+
+    async def get_doc(self, kb_id: uuid.UUID, doc_id: uuid.UUID, user_id: uuid.UUID) -> KbDocument:
+        doc = await self._db.get(KbDocument, doc_id)
+        if not doc or doc.kb_id != kb_id:
+            raise NotFoundError("KbDocument", str(doc_id))
+        if doc.user_id != user_id:
+            raise ForbiddenError("Access denied")
+        return doc
+
+    async def find_doc_by_hash(self, kb_id: uuid.UUID, file_hash: str) -> KbDocument | None:
+        return await self._db.scalar(
+            select(KbDocument)
+            .where(KbDocument.kb_id == kb_id, KbDocument.file_hash == file_hash)
+            .order_by(KbDocument.created_at.desc())
+            .limit(1)
+        )
+
+    async def create_document(self, **kwargs) -> KbDocument:
+        doc = KbDocument(**kwargs)
+        self._db.add(doc)
+        await self._db.flush()
+        return doc
+
+    async def mark_document_pending(self, doc: KbDocument) -> KbDocument:
+        doc.processing_status = KbProcessingStatusEnum.pending
+        return doc
+
+    async def set_document_task(self, doc: KbDocument, task_id: str) -> KbDocument:
+        doc.celery_task_id = task_id
+        return doc
+
+    async def delete_kb(self, kb: KnowledgeBase) -> list[KbDocument]:
+        docs = list(await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb.id)))
+        await self._db.delete(kb)
+        return docs
+
+    async def delete_document(self, doc: KbDocument) -> tuple[str | None, str | None]:
+        if doc.processing_status == KbProcessingStatusEnum.ready:
+            await self._db.execute(
+                update(KnowledgeBase)
+                .where(KnowledgeBase.id == doc.kb_id)
+                .values(document_count=KnowledgeBase.document_count - 1)
+            )
+        task_id = doc.celery_task_id
+        storage_key = doc.storage_key
+        await self._db.delete(doc)
+        return task_id, storage_key
+
+    async def mark_document_for_retry(self, doc: KbDocument) -> KbDocument:
+        doc.processing_status = KbProcessingStatusEnum.pending
+        doc.error_message = None
+        return doc
+
+    async def cancel_document(self, doc: KbDocument) -> tuple[KbDocument, str | None]:
+        task_id = doc.celery_task_id
+        doc.processing_status = KbProcessingStatusEnum.cancelled
+        doc.celery_task_id = None
+        return doc, task_id
+
+    async def list_docs_for_reindex(self, kb_id: uuid.UUID) -> list[KbDocument]:
+        return list(await self._db.scalars(select(KbDocument).where(KbDocument.kb_id == kb_id)))
+
+    async def adjust_document_count(self, kb_id: uuid.UUID, ready_count_delta: int) -> None:
+        await self._db.execute(
+            update(KnowledgeBase)
+            .where(KnowledgeBase.id == kb_id)
+            .values(document_count=KnowledgeBase.document_count - ready_count_delta)
+        )
+
+    async def set_agent_kbs(self, agent_id: uuid.UUID, kb_ids: list[uuid.UUID]) -> None:
+        result = await self._db.scalars(
+            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id)
+        )
+        for existing in result:
+            await self._db.delete(existing)
+        for kb_id in kb_ids:
+            self._db.add(AgentKnowledgeBase(agent_id=agent_id, kb_id=kb_id))
+        await self._db.flush()
+
+    async def get_kb_ids_for_agent(self, agent_id: uuid.UUID) -> list[uuid.UUID]:
+        result = await self._db.scalars(
+            select(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id)
+        )
+        return [row.kb_id for row in result]
+
+    async def save_changes(self) -> None:
+        await self._db.commit()
+
+    async def undo_changes(self) -> None:
+        await self._db.rollback()

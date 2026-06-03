@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — MCP Servers</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     .mcp-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; transition:border-color .18s, box-shadow .18s; }
     .mcp-card:hover { border-color:var(--border-dark); box-shadow:var(--shadow-md); }
@@ -40,7 +40,7 @@
 
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
     <div>
-      <h1 style="font-size:22px; font-weight:700; letter-spacing:-.5px;">MCP Servers</h1>
+      <h1 style="font-size:22px; font-weight:700; letter-spacing:0;">MCP Servers</h1>
       <p style="color:var(--text-muted); font-size:14px; margin-top:2px;">Connect any MCP server — tools are auto-discovered and available in agents</p>
     </div>
     <button onclick="showAddModal()" class="btn btn-primary">+ Add MCP Server</button>
@@ -169,7 +169,7 @@
   </div>
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script>
   let servers = [];
   let editingId = null;

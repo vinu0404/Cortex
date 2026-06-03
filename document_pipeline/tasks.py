@@ -2,14 +2,28 @@ import asyncio
 import logging
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
 from celery_app import celery_app
+from app.common.retry import async_http_request_with_retry, async_redis_call
 from config.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DocContext:
+    id: UUID
+    kb_id: UUID
+    user_id: UUID
+    filename: str
+    content_type: str
+    storage_key: str | None
+    staging_path: str | None
+    source_url: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -75,141 +89,79 @@ def ingest_from_s3_task(self, doc_id: str, s3_url: str, creds: dict) -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_device_pipeline(doc_id: str) -> None:
-    from database.session import get_custom_db_context_session
-    from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum
-    from sqlalchemy import select
     import redis.asyncio as aioredis
 
     # Always close redis on both success and failure paths
     redis_client = aioredis.from_url(settings.REDIS_URL)
     try:
-        async with get_custom_db_context_session() as db:
-            result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
-            # scalar_one() raises NoResultFound if doc missing → blindly retries forever
-            doc = result.scalar_one_or_none()
-            if doc is None:
-                raise ValueError(f"Document {doc_id} not found in DB — not retrying")
-            if doc.processing_status == KbProcessingStatusEnum.cancelled:
-                logger.info("process_document_task skipped — document %s was cancelled", doc_id)
-                return
+        doc = await _load_doc_context(doc_id)
+        if doc is None:
+            return
 
-            kb_id = str(doc.kb_id)
-            user_id = str(doc.user_id)
-            filename = doc.filename
-            content_type = doc.content_type or "application/octet-stream"
+        kb_id = str(doc.kb_id)
+        user_id = str(doc.user_id)
+        storage_key = doc.storage_key
 
-            if doc.staging_path:
-                # --- 1. uploading (legacy staging-based path) ---
-                from document_pipeline.storage import multipart_upload_file, build_kb_storage_key
-                storage_key = build_kb_storage_key(kb_id, doc_id, filename)
+        if doc.staging_path:
+            from document_pipeline.storage import build_kb_storage_key, multipart_upload_file
+            storage_key = build_kb_storage_key(kb_id, doc_id, doc.filename)
+            await _mark_doc_status(doc_id, "uploading")
+            await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", doc.filename)
+            multipart_upload_file(doc.staging_path, storage_key, doc.content_type)
+            _cleanup_staging_file(doc.staging_path)
+            await _set_doc_storage(doc_id, storage_key)
 
-                doc.processing_status = KbProcessingStatusEnum.uploading
-                await db.commit()
-                await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", filename)
-
-                multipart_upload_file(doc.staging_path, storage_key, content_type)
-
-                try:
-                    staging_dir = os.path.dirname(doc.staging_path)
-                    os.remove(doc.staging_path)
-                    shutil.rmtree(staging_dir, ignore_errors=True)
-                except Exception:
-                    logger.error("Could not remove staging file: %s", doc.staging_path)
-
-                doc.storage_key = storage_key
-                doc.staging_path = None
-                await db.commit()
-            else:
-                # Presigned upload — client uploaded directly to B2, file already at doc.storage_key
-                storage_key = doc.storage_key
-
-            # --- 2. processing ---
-            doc.processing_status = KbProcessingStatusEnum.processing
-            await db.commit()
-            await _publish_status(redis_client, user_id, kb_id, doc_id, "processing", filename)
-
-            await _ingest_from_storage(db, doc, kb_id, doc_id, filename, storage_key, user_id, redis_client)
+        await _mark_doc_status(doc_id, "processing")
+        await _publish_status(redis_client, user_id, kb_id, doc_id, "processing", doc.filename)
+        await _ingest_from_storage(doc, storage_key, redis_client)
     finally:
         await redis_client.aclose()
 
 
 async def _run_s3_pipeline(doc_id: str, s3_url: str, creds: dict) -> None:
-    from database.session import get_custom_db_context_session
-    from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum
-    from sqlalchemy import select
     import redis.asyncio as aioredis
 
     # Always close redis
     redis_client = aioredis.from_url(settings.REDIS_URL)
     try:
-        async with get_custom_db_context_session() as db:
-            result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
-            # scalar_one() raises NoResultFound if doc missing
-            doc = result.scalar_one_or_none()
-            if doc is None:
-                raise ValueError(f"Document {doc_id} not found in DB — not retrying")
-            if doc.processing_status == KbProcessingStatusEnum.cancelled:
-                logger.info("ingest_from_s3_task skipped — document %s was cancelled", doc_id)
-                return
+        doc = await _load_doc_context(doc_id)
+        if doc is None:
+            return
 
-            kb_id = str(doc.kb_id)
-            user_id = str(doc.user_id)
-            filename = doc.filename
+        kb_id = str(doc.kb_id)
+        user_id = str(doc.user_id)
+        await _mark_doc_status(doc_id, "uploading")
+        await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", doc.filename)
 
-            # --- 1. uploading (download from S3 source) ---
-            doc.processing_status = KbProcessingStatusEnum.uploading
-            await db.commit()
-            await _publish_status(redis_client, user_id, kb_id, doc_id, "uploading", filename)
+        file_bytes = await _download_from_s3(s3_url, creds)
+        from document_pipeline.storage import build_kb_storage_key, multipart_upload_bytes
+        storage_key = build_kb_storage_key(kb_id, doc_id, doc.filename)
+        multipart_upload_bytes(file_bytes, storage_key, doc.content_type)
+        await _set_doc_storage(doc_id, storage_key)
 
-            file_bytes = await _download_from_s3(s3_url, creds)
-
-            # use canonical build_kb_storage_key
-            from document_pipeline.storage import multipart_upload_bytes, build_kb_storage_key
-            storage_key = build_kb_storage_key(kb_id, doc_id, filename)
-            content_type = doc.content_type or "application/octet-stream"
-
-            multipart_upload_bytes(file_bytes, storage_key, content_type)
-
-            doc.storage_key = storage_key
-            await db.commit()
-
-            # --- 2. processing ---
-            doc.processing_status = KbProcessingStatusEnum.processing
-            await db.commit()
-            await _publish_status(redis_client, user_id, kb_id, doc_id, "processing", filename)
-
-            await _ingest_from_storage(db, doc, kb_id, doc_id, filename, storage_key, user_id, redis_client)
+        await _mark_doc_status(doc_id, "processing")
+        await _publish_status(redis_client, user_id, kb_id, doc_id, "processing", doc.filename)
+        await _ingest_from_storage(doc, storage_key, redis_client)
     finally:
         await redis_client.aclose()
 
 
-async def _ingest_from_storage(db, doc, kb_id: str, doc_id: str, filename: str,
-                                storage_key: str, user_id: str, redis_client) -> None:
+async def _ingest_from_storage(doc: _DocContext, storage_key: str | None, redis_client) -> None:
     """Common pipeline: download → parse → chunk → embed → Qdrant → ready."""
-    from app.knowledge_bases.db_models import KbProcessingStatusEnum, KnowledgeBase
     from document_pipeline.parsers import parse_document
     from document_pipeline.chunker import chunk_document
     from document_pipeline.embedder import embed_texts
     from document_pipeline import vector_store
-    from sqlalchemy import select, update
 
-    # Fetch user's API key (first available)
-    from app.api_keys.db_models import UserApiKey
-    key_result = await db.execute(
-        select(UserApiKey).where(UserApiKey.user_id == doc.user_id).limit(1)
-    )
-    key_rec = key_result.scalar_one_or_none()
-    if not key_rec:
-        raise RuntimeError("No API key found for user — cannot embed")
+    if not storage_key:
+        raise RuntimeError("Document has no storage key")
 
-    from app.connectors.encryption import decrypt_str
-    openai_api_key = decrypt_str(key_rec.encrypted_key)
-
+    openai_api_key = await _get_user_api_key(doc.user_id)
     from document_pipeline.storage import download_file
     file_bytes = download_file(storage_key)
 
     # parse_document is now async (was asyncio.run inside async context)
-    raw_chunks = await parse_document(file_bytes, filename, openai_api_key)
+    raw_chunks = await parse_document(file_bytes, doc.filename, openai_api_key)
     if not raw_chunks:
         raise RuntimeError("Parser produced no chunks — document may be empty or unreadable")
 
@@ -220,25 +172,131 @@ async def _ingest_from_storage(db, doc, kb_id: str, doc_id: str, filename: str,
     texts = [c.text for c in chunks]
     embeddings = await embed_texts(texts, openai_api_key)
 
+    kb_id = str(doc.kb_id)
+    doc_id = str(doc.id)
     await vector_store.ensure_collection(kb_id, redis_client)
     await vector_store.create_text_index(kb_id)
-    await vector_store.upsert_chunks(kb_id, doc_id, filename, chunks, embeddings)
+    await vector_store.upsert_chunks(kb_id, doc_id, doc.filename, chunks, embeddings)
 
-    doc.processing_status = KbProcessingStatusEnum.ready
-    doc.chunk_count = len(chunks)
-    doc.embedding_model = settings.KB_EMBEDDING_MODEL
-    doc.indexed_at = datetime.now(timezone.utc)
-    doc.error_message = None
-
-    # increment knowledge_base document_count atomically
-    await db.execute(
-        update(KnowledgeBase)
-        .where(KnowledgeBase.id == doc.kb_id)
-        .values(document_count=KnowledgeBase.document_count + 1)
+    if not await _mark_doc_ready(doc.id, len(chunks)):
+        return
+    await _publish_status(
+        redis_client,
+        str(doc.user_id),
+        str(doc.kb_id),
+        str(doc.id),
+        "ready",
+        doc.filename,
+        chunk_count=len(chunks),
     )
 
-    await db.commit()
-    await _publish_status(redis_client, user_id, kb_id, doc_id, "ready", filename, chunk_count=len(chunks))
+
+async def _load_doc_context(doc_id: str) -> _DocContext | None:
+    from sqlalchemy import select
+
+    from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum
+    from database.session import get_custom_db_context_session
+
+    async with get_custom_db_context_session() as db:
+        result = await db.execute(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
+        doc = result.scalar_one_or_none()
+        if doc is None:
+            raise ValueError(f"Document {doc_id} not found in DB — not retrying")
+        if doc.processing_status == KbProcessingStatusEnum.cancelled:
+            logger.info("document pipeline skipped — document %s was cancelled", doc_id)
+            return None
+        return _DocContext(
+            id=doc.id,
+            kb_id=doc.kb_id,
+            user_id=doc.user_id,
+            filename=doc.filename,
+            content_type=doc.content_type or "application/octet-stream",
+            storage_key=doc.storage_key,
+            staging_path=doc.staging_path,
+            source_url=doc.source_url,
+        )
+
+
+async def _mark_doc_status(doc_id: str, status: str) -> None:
+    from sqlalchemy import select
+
+    from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum
+    from database.model_service import AsyncModelService
+    from database.session import get_custom_db_context_session
+
+    async with get_custom_db_context_session() as db:
+        doc = await db.scalar(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
+        if doc:
+            if doc.processing_status == KbProcessingStatusEnum.cancelled:
+                return
+            doc.processing_status = KbProcessingStatusEnum(status)
+            await AsyncModelService(db).save_changes()
+
+
+async def _set_doc_storage(doc_id: str, storage_key: str) -> None:
+    from sqlalchemy import select
+
+    from app.knowledge_bases.db_models import KbDocument
+    from database.model_service import AsyncModelService
+    from database.session import get_custom_db_context_session
+
+    async with get_custom_db_context_session() as db:
+        doc = await db.scalar(select(KbDocument).where(KbDocument.id == UUID(doc_id)))
+        if doc:
+            doc.storage_key = storage_key
+            doc.staging_path = None
+            await AsyncModelService(db).save_changes()
+
+
+async def _get_user_api_key(user_id: UUID) -> str:
+    from sqlalchemy import select
+
+    from app.api_keys.db_models import UserApiKey
+    from app.connectors.encryption import decrypt_str
+    from database.session import get_custom_db_context_session
+
+    async with get_custom_db_context_session() as db:
+        key_rec = await db.scalar(select(UserApiKey).where(UserApiKey.user_id == user_id).limit(1))
+        if not key_rec:
+            raise RuntimeError("No API key found for user — cannot embed")
+        return decrypt_str(key_rec.encrypted_key)
+
+
+async def _mark_doc_ready(doc_id: UUID, chunk_count: int) -> bool:
+    from sqlalchemy import select, update
+
+    from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum, KnowledgeBase
+    from database.model_service import AsyncModelService
+    from database.session import get_custom_db_context_session
+
+    async with get_custom_db_context_session() as db:
+        doc = await db.scalar(select(KbDocument).where(KbDocument.id == doc_id))
+        if not doc:
+            raise ValueError(f"Document {doc_id} not found while marking ready")
+        if doc.processing_status == KbProcessingStatusEnum.cancelled:
+            logger.info("document pipeline skipped ready update — document %s was cancelled", doc_id)
+            return False
+        doc.processing_status = KbProcessingStatusEnum.ready
+        doc.chunk_count = chunk_count
+        doc.embedding_model = settings.KB_EMBEDDING_MODEL
+        doc.indexed_at = datetime.now(timezone.utc)
+        doc.error_message = None
+        await db.execute(
+            update(KnowledgeBase)
+            .where(KnowledgeBase.id == doc.kb_id)
+            .values(document_count=KnowledgeBase.document_count + 1)
+        )
+        await AsyncModelService(db).save_changes()
+        return True
+
+
+def _cleanup_staging_file(staging_path: str) -> None:
+    try:
+        staging_dir = os.path.dirname(staging_path)
+        os.remove(staging_path)
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    except Exception:
+        logger.error("Could not remove staging file: %s", staging_path)
 
 
 async def _download_from_s3(s3_url: str, creds: dict) -> bytes:
@@ -263,13 +321,13 @@ async def _download_from_s3(s3_url: str, creds: dict) -> bytes:
     else:
         import httpx
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            resp = await client.get(s3_url)
-            resp.raise_for_status()
+            resp = await async_http_request_with_retry(client, "GET", s3_url)
             return resp.content
 
 
 async def _set_doc_failed(doc_id: str, error_message: str) -> None:
     from database.session import get_custom_db_context_session
+    from database.model_service import AsyncModelService
     from app.knowledge_bases.db_models import KbDocument, KbProcessingStatusEnum
     from sqlalchemy import select
     import redis.asyncio as aioredis
@@ -289,12 +347,12 @@ async def _set_doc_failed(doc_id: str, error_message: str) -> None:
                         staging_dir = os.path.dirname(doc.staging_path)
                         os.remove(doc.staging_path)
                         shutil.rmtree(staging_dir, ignore_errors=True)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("Failed to clean staged document %s: %s", doc.staging_path, exc)
 
                 doc.processing_status = KbProcessingStatusEnum.failed
                 doc.error_message = error_message[:2000]
-                await db.commit()
+                await AsyncModelService(db).save_changes()
                 await _publish_status(
                     redis_client, str(doc.user_id), str(doc.kb_id), doc_id, "failed", doc.filename,
                     error_message=error_message[:200],
@@ -323,6 +381,6 @@ async def _publish_status(
     if error_message:
         payload["error_message"] = error_message
     try:
-        await redis_client.publish(f"kb_status:{user_id}", json.dumps(payload))
+        await async_redis_call(redis_client, "publish", f"kb_status:{user_id}", json.dumps(payload))
     except Exception:
         logger.error("Failed to publish KB status: %s", payload)

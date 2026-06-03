@@ -1,17 +1,9 @@
 import json
 import logging
 
-import litellm
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
 from app.common.exceptions import CircularDependencyError, PlanValidationError
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 from core.schemas import ExecutionPlan, LongTermMemory
 from tools.registry import get_registry
@@ -19,32 +11,13 @@ from tools.registry import get_registry
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-_RETRIABLE = (Exception,)
-
-
-def _is_retriable(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "rate" in msg or "timeout" in msg or "connection" in msg or "500" in msg or "503" in msg
-
-
-@retry(
-    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
-    wait=wait_exponential_jitter(
-        initial=settings.LLM_RETRY_WAIT_MIN,
-        max=settings.LLM_RETRY_WAIT_MAX,
-        jitter=settings.LLM_RETRY_JITTER,
-    ),
-    retry=retry_if_exception(_is_retriable),
-    before_sleep=before_sleep_log(logger, 30),  # WARNING
-    reraise=True,
-)
 async def _call_master_llm(
     messages: list[dict],
     model_id: str,
     api_key: str,
     conversation_id: str,
 ) -> tuple[ExecutionPlan, str]:
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=messages,
         response_format={"type": "json_object"},

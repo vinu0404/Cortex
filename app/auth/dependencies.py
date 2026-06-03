@@ -10,6 +10,7 @@ from app.auth.db_models import RoleEnum, User
 from app.auth.manager import AuthManager
 from app.common.exceptions import ForbiddenError, UnauthorizedError
 from app.common.redis_client import get_async_redis
+from app.common.retry import async_redis_call
 from config.settings import get_settings
 from database.session import get_db
 
@@ -33,7 +34,7 @@ async def _validate_access_token(
     redis = get_async_redis()
     import hashlib
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    if await redis.exists(f"auth:blacklist:{token_hash}"):
+    if await async_redis_call(redis, "exists", f"auth:blacklist:{token_hash}"):
         raise UnauthorizedError("Token has been revoked")
 
     return payload

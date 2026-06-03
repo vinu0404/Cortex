@@ -17,4 +17,6 @@ from app.website_collections.db_models import (
 from app.vinu.db_models import (
     VinuConversation, VinuMessage, VinuSummary,
 )
-from app.cron_jobs.db_models import CronJob  # noqa: F401
+from app.cron_jobs.db_models import CronJob
+from app.mcp_servers.db_models import MCPServer
+from app.plan_runs.db_models import AgentRunRecord, PlanRun

@@ -6,8 +6,9 @@ from uuid import UUID
 import litellm
 
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
-from core.schemas import LongTermMemory, LongTermMemoryExtraction, MemoryCompressionOutput
+from core.schemas import LongTermMemoryExtraction, MemoryCompressionOutput
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ class MemoryManager:
 
         prompt_text = get_compiled_prompt("memory_compression", {"messages": messages_text})
         try:
-            resp = await litellm.acompletion(
+            resp = await acompletion_with_retry(
                 model=model_id,
                 messages=[{"role": "user", "content": prompt_text}],
                 response_format={"type": "json_object"},
@@ -111,7 +112,7 @@ async def _evaluate_long_term(
         "existing_ltm": json.dumps(existing_ltm) if existing_ltm else "{}",
     })
     try:
-        resp = await litellm.acompletion(
+        resp = await acompletion_with_retry(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
             response_format={"type": "json_object"},

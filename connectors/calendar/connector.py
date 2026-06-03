@@ -1,5 +1,6 @@
 import httpx
 
+from app.common.retry import async_http_request_with_retry
 from config.settings import get_settings
 from connectors.base import BaseConnector
 
@@ -35,14 +36,13 @@ class CalendarConnector(BaseConnector):
 
     async def handle_callback(self, code: str, state: str) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(_TOKEN_URL, data={
+            resp = await async_http_request_with_retry(client, "POST", _TOKEN_URL, data={
                 "code": code,
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
                 "redirect_uri": settings.GOOGLE_REDIRECT_URI,
                 "grant_type": "authorization_code",
             })
-            resp.raise_for_status()
             data = resp.json()
 
         email = await self._fetch_email(data["access_token"])
@@ -55,13 +55,12 @@ class CalendarConnector(BaseConnector):
 
     async def refresh_access_token(self, tokens: dict) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(_TOKEN_URL, data={
+            resp = await async_http_request_with_retry(client, "POST", _TOKEN_URL, data={
                 "refresh_token": tokens["refresh_token"],
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
                 "grant_type": "refresh_token",
             })
-            resp.raise_for_status()
             data = resp.json()
         tokens["access_token"] = data["access_token"]
         tokens["expires_in"] = data.get("expires_in", 3600)
@@ -69,10 +68,11 @@ class CalendarConnector(BaseConnector):
 
     async def _fetch_email(self, access_token: str) -> str:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
+            resp = await async_http_request_with_retry(
+                client,
+                "GET",
                 "https://www.googleapis.com/userinfo/v2/me",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            if resp.status_code == 200:
-                return resp.json().get("email", "calendar-user")
+            return resp.json().get("email", "calendar-user")
         return "calendar-user"

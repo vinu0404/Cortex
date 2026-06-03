@@ -1,9 +1,9 @@
 import logging
 
-import litellm
 from pydantic import BaseModel
 
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ async def _classify(content: str, prompt_name: str, api_key: str | None, label: 
     """
     try:
         system = get_compiled_prompt(prompt_name, {})
-        resp = await litellm.acompletion(
+        resp = await acompletion_with_retry(
             model=settings.GUARDRAILS_MODEL,
             api_key=api_key,
             messages=[

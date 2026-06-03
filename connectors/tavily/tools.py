@@ -2,6 +2,7 @@ import logging
 
 import httpx
 
+from app.common.retry import async_http_request_with_retry
 from config.settings import get_settings
 from tools.registry import tool
 
@@ -28,7 +29,9 @@ async def web_search(
     if not query or not query.strip():
         return {"answer": None, "results": [], "query": query, "sources": [], "error": "Empty query"}
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             _SEARCH_URL,
             json={
                 "api_key": api_key,
@@ -39,9 +42,6 @@ async def web_search(
                 "topic": topic,
             },
         )
-        if not resp.is_success:
-            logger.error("Tavily web_search %s — body: %s", resp.status_code, resp.text[:500])
-        resp.raise_for_status()
         data = resp.json()
     results = [
         {
@@ -71,11 +71,12 @@ async def fetch_url(url: str) -> dict:
     if not api_key:
         raise RuntimeError("TAVILY_API_KEY not configured on server")
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             _EXTRACT_URL,
             json={"api_key": api_key, "urls": [url]},
         )
-        resp.raise_for_status()
         data = resp.json()
     results = data.get("results", [])
     return {

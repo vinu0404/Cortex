@@ -15,6 +15,8 @@ async def retrieve(collection_id: str, query_embedding: list[float], top_k: int)
             "url": r["payload"].get("url", ""),
             "title": r["payload"].get("title", ""),
             "depth": r["payload"].get("depth", 0),
+            "collection_id": r["payload"].get("collection_id", ""),
+            "url_id": r["payload"].get("url_id", ""),
         }
         for r in results
     ]

@@ -77,6 +77,8 @@ async def knowledge_base_search(
         results.append({
             "text": text,
             "filename": item.get("filename", ""),
+            "kb_id": item.get("kb_id", ""),
+            "doc_id": item.get("doc_id", ""),
             "page": item.get("page_start", 1),
             "section": item.get("section"),
             "chunk_type": item.get("chunk_type", "text"),
@@ -89,7 +91,13 @@ async def knowledge_base_search(
         "query": query,
         "kb_ids_searched": kb_ids,
         "sources": [
-            {"type": "knowledge_base", "title": r["filename"], "page": r.get("page")}
+            {
+                "type": "knowledge_base",
+                "title": r["filename"],
+                "page": r.get("page"),
+                "kb_id": r.get("kb_id"),
+                "doc_id": r.get("doc_id"),
+            }
             for r in results if r.get("filename")
         ],
     }

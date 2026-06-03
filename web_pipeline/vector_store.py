@@ -11,6 +11,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from app.common.retry import async_qdrant_call
 from config.settings import get_settings
 from document_pipeline.chunker import Chunk
 
@@ -32,9 +33,10 @@ async def ensure_collection(collection_id: str, redis_client=None) -> None:
     async def _create_if_missing() -> None:
         client = _client()
         try:
-            collections = await client.get_collections()
+            collections = await async_qdrant_call(client.get_collections)
             if name not in {c.name for c in collections.collections}:
-                await client.create_collection(
+                await async_qdrant_call(
+                    client.create_collection,
                     collection_name=name,
                     vectors_config=VectorParams(size=settings.KB_EMBEDDING_DIMS, distance=Distance.COSINE),
                 )
@@ -75,7 +77,7 @@ async def upsert_chunks(
             )
             for i, chunk in enumerate(chunks)
         ]
-        await client.upsert(collection_name=_collection_name(collection_id), points=points)
+        await async_qdrant_call(client.upsert, collection_name=_collection_name(collection_id), points=points)
         logger.info("Upserted %d WC points to collection %s", len(points), collection_id)
     finally:
         await client.close()
@@ -84,7 +86,8 @@ async def upsert_chunks(
 async def delete_url_chunks(collection_id: str, url_id: str) -> None:
     client = _client()
     try:
-        await client.delete(
+        await async_qdrant_call(
+            client.delete,
             collection_name=_collection_name(collection_id),
             points_selector=Filter(must=[FieldCondition(key="url_id", match=MatchValue(value=url_id))]),
         )
@@ -100,7 +103,7 @@ async def delete_url_chunks(collection_id: str, url_id: str) -> None:
 async def delete_collection(collection_id: str) -> None:
     client = _client()
     try:
-        await client.delete_collection(_collection_name(collection_id))
+        await async_qdrant_call(client.delete_collection, _collection_name(collection_id))
     except Exception:
         logger.error("Failed to delete Qdrant WC collection %s", collection_id, exc_info=True)
     finally:
@@ -110,7 +113,8 @@ async def delete_collection(collection_id: str) -> None:
 async def list_url_chunks(collection_id: str, url_id: str, limit: int = 500) -> list[dict]:
     client = _client()
     try:
-        results, _ = await client.scroll(
+        results, _ = await async_qdrant_call(
+            client.scroll,
             collection_name=_collection_name(collection_id),
             scroll_filter=Filter(
                 must=[FieldCondition(key="url_id", match=MatchValue(value=url_id))]
@@ -125,7 +129,7 @@ async def list_url_chunks(collection_id: str, url_id: str, limit: int = 500) -> 
         )
     except Exception:
         logger.error("WC list_url_chunks failed for url %s in collection %s", url_id, collection_id, exc_info=True)
-        return []
+        raise
     finally:
         await client.close()
 
@@ -133,7 +137,8 @@ async def list_url_chunks(collection_id: str, url_id: str, limit: int = 500) -> 
 async def dense_search(collection_id: str, query_embedding: list[float], top_k: int) -> list[dict]:
     client = _client()
     try:
-        results = await client.search(
+        results = await async_qdrant_call(
+            client.search,
             collection_name=_collection_name(collection_id),
             query_vector=query_embedding,
             limit=top_k,
@@ -142,6 +147,6 @@ async def dense_search(collection_id: str, query_embedding: list[float], top_k: 
         return [{"id": str(r.id), "score": r.score, "payload": r.payload} for r in results]
     except Exception:
         logger.error("WC dense search failed for collection %s", collection_id, exc_info=True)
-        return []
+        raise
     finally:
         await client.close()

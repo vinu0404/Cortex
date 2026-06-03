@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Website Collections</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     .wc-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); cursor:pointer; transition:border-color .15s; }
     .wc-card:hover { border-color:var(--accent); }
     .wc-card.active { border-color:var(--accent); background:var(--surface); }
+    .url-row-highlight { background:rgba(17,17,17,.04); box-shadow:inset 3px 0 0 rgba(17,17,17,.78); }
     .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; flex-shrink:0; }
     .status-pending { background:#f59e0b; }
     .status-crawling, .status-processing { background:#3b82f6; animation:pulse-dot 1s ease-in-out infinite; }
@@ -118,12 +119,15 @@
   </div>
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script>
   requireAuth();
 
   let collections = [];
-  let activeWcId = new URLSearchParams(location.search).get('id') || null;
+  const pageParams = new URLSearchParams(location.search);
+  let activeWcId = pageParams.get('id') || null;
+  let pendingWcUrlId = pageParams.get('url_id') || null;
+  let pendingWcOpenMode = pageParams.get('open') || null;
   let urls = [];
   let sseSource = null;
 
@@ -200,8 +204,21 @@
 
   function selectCollection(id) {
     activeWcId = id;
+    syncWcQueryState();
     renderCollectionList();
     loadUrls(id);
+  }
+
+  function syncWcQueryState() {
+    const params = new URLSearchParams(location.search);
+    if (activeWcId) params.set('id', activeWcId);
+    else params.delete('id');
+    if (pendingWcUrlId) params.set('url_id', pendingWcUrlId);
+    else params.delete('url_id');
+    if (pendingWcOpenMode && pendingWcUrlId) params.set('open', pendingWcOpenMode);
+    else params.delete('open');
+    const next = params.toString() ? `${location.pathname}?${params.toString()}` : location.pathname;
+    history.replaceState({}, '', next);
   }
 
   async function loadUrls(wcId) {
@@ -209,6 +226,7 @@
       urls = await apiGet(`website-collections/${wcId}/urls`) || [];
       const wc = collections.find(c => c.id === wcId);
       renderUrlPanel(wc);
+      await applyWcDeepLinkState(wcId);
     } catch (err) { toast(err.message, 'error'); }
   }
 
@@ -423,6 +441,21 @@
     }
   }
 
+  async function applyWcDeepLinkState(wcId) {
+    if (!pendingWcUrlId || wcId !== activeWcId) return;
+    const row = document.getElementById(`url-row-${pendingWcUrlId}`);
+    if (!row) return;
+    row.classList.add('url-row-highlight');
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    if (pendingWcOpenMode === 'chunks') {
+      pendingWcOpenMode = null;
+      syncWcQueryState();
+      const selectedUrl = urls.find(u => u.id === pendingWcUrlId);
+      await viewChunks(pendingWcUrlId, selectedUrl?.url || 'Selected URL');
+    }
+  }
+
   function updateBulkBarWc() {
     const selected = [...document.querySelectorAll('.url-checkbox:checked')];
     const bar = document.getElementById('bulk-bar-wc');
@@ -474,7 +507,7 @@
   function startSse() {
     if (sseSource) sseSource.close();
     const token = getToken();
-    sseSource = new EventSource(`/website-collections/status/stream?token=${encodeURIComponent(token)}`);
+    sseSource = new EventSource(`/api/v1/website-collections/status/stream?token=${encodeURIComponent(token)}`);
     sseSource.onmessage = async e => {
       if (e.data === 'connected') return;
       try {
@@ -520,6 +553,7 @@
 
   _populateTzSelect();
   initTimezone().then(() => _populateTzSelect());
+  syncWcQueryState();
   loadCollections();
   startSse();
 </script>

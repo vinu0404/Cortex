@@ -1,5 +1,6 @@
 import httpx
 
+from app.common.retry import async_http_request_with_retry
 from config.settings import get_settings
 from connectors.base import BaseConnector
 
@@ -26,14 +27,13 @@ class SalesforceConnector(BaseConnector):
 
     async def handle_callback(self, code: str, state: str) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(_TOKEN_URL, data={
+            resp = await async_http_request_with_retry(client, "POST", _TOKEN_URL, data={
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": settings.SALESFORCE_CLIENT_ID,
                 "client_secret": settings.SALESFORCE_CLIENT_SECRET,
                 "redirect_uri": settings.SALESFORCE_REDIRECT_URI,
             })
-            resp.raise_for_status()
             data = resp.json()
 
         return {
@@ -46,13 +46,12 @@ class SalesforceConnector(BaseConnector):
 
     async def refresh_access_token(self, tokens: dict) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(_TOKEN_URL, data={
+            resp = await async_http_request_with_retry(client, "POST", _TOKEN_URL, data={
                 "grant_type": "refresh_token",
                 "refresh_token": tokens["refresh_token"],
                 "client_id": settings.SALESFORCE_CLIENT_ID,
                 "client_secret": settings.SALESFORCE_CLIENT_SECRET,
             })
-            resp.raise_for_status()
             data = resp.json()
         tokens["access_token"] = data["access_token"]
         tokens["instance_url"] = data.get("instance_url", tokens.get("instance_url", ""))

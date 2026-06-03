@@ -1,6 +1,4 @@
 import asyncio
-import base64
-import json
 import logging
 from uuid import UUID
 
@@ -13,7 +11,6 @@ from app.auth.db_models import User
 from app.chat.manager import ChatManager
 from app.chat.models import (
     ArtifactSaveRequest,
-    ArtifactSaveResponse,
     ChatStreamRequest,
     ConversationCreate,
     ConversationResponse,
@@ -25,12 +22,27 @@ from app.chat.streaming import chat_stream
 from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.common.pagination import build_cursor_page, decode_cursor, encode_cursor
-from app.common.redis_client import get_async_redis
 from database.session import get_db, get_custom_db_context_session
-from document_pipeline.storage import build_artifact_storage_key, generate_presigned_url, upload_bytes
+from document_pipeline.storage import generate_presigned_url
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _normalize_sources(sources: list[dict] | None) -> list[dict] | None:
+    if not sources:
+        return sources
+    normalized: list[dict] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            normalized.append(source)
+            continue
+        item = dict(source)
+        legacy_collection_id = item.pop("collection_id", None)
+        if legacy_collection_id and not item.get("web_collection_id"):
+            item["web_collection_id"] = legacy_collection_id
+        normalized.append(item)
+    return normalized
 
 
 @router.post("/chat/conversations", response_model=None)
@@ -112,10 +124,24 @@ async def get_messages(
         for m in messages:
             resp = MessageResponse.model_validate(m)
             resp.saved_artifacts = url_map.get(m.id, [])
+            resp.sources = _normalize_sources(resp.sources)
             result.append(resp.model_dump(mode="json"))
 
         prev_cursor = encode_cursor(messages[0].created_at, messages[0].id) if has_more and messages else None
         return ok({"messages": result, "has_more": has_more, "prev_cursor": prev_cursor})
+    except AppError as e:
+        return fail(e.code, e.message, e.status_code)
+
+
+@router.delete("/chat/conversations/{conversation_id}", response_model=None)
+async def delete_conversation(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    try:
+        await ChatManager(db).delete_conversation(conversation_id, current_user.id)
+        return ok(message="Conversation deleted")
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -127,40 +153,8 @@ async def save_artifact(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        chat_mgr = ChatManager(db)
-        await chat_mgr.get_conversation(body.conversation_id, current_user.id)
-
-        # Return existing artifact if already saved (two-tab race guard)
-        existing = await chat_mgr.get_artifact_by_message_and_type(body.message_id, body.type)
-        if existing:
-            loop = asyncio.get_running_loop()
-            url = await loop.run_in_executor(None, generate_presigned_url, existing.storage_key)
-            return ok(ArtifactSaveResponse(id=existing.id, url=url).model_dump(mode="json"))
-
-        filename = body.filename
-        if body.type == "pdf":
-            raw_bytes = base64.b64decode(body.content)
-            content_type = "application/pdf"
-        else:
-            raw_bytes = body.content.encode("utf-8")
-            content_type = "text/csv"
-
-        key = build_artifact_storage_key(str(body.conversation_id), filename)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, upload_bytes, raw_bytes, key, content_type)
-        url = await loop.run_in_executor(None, generate_presigned_url, key)
-
-        artifact = await chat_mgr.save_artifact(
-            message_id=body.message_id,
-            conversation_id=body.conversation_id,
-            user_id=current_user.id,
-            type=body.type,
-            title=body.title,
-            filename=filename,
-            storage_key=key,
-        )
-        await db.commit()
-        return ok(ArtifactSaveResponse(id=artifact.id, url=url).model_dump(mode="json"), status_code=201)
+        saved, created = await ChatManager(db).save_user_artifact(body, current_user.id)
+        return ok(saved.model_dump(mode="json"), status_code=201 if created else 200)
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
 
@@ -207,18 +201,11 @@ async def hitl_respond(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        chat_mgr = ChatManager(db)
-        await chat_mgr.resolve_hitl_request(
-            body.request_id, current_user.id, body.approved, body.instructions
-        )
-        await db.commit()  # commit before publish so SSE stream sees updated status
-        redis = get_async_redis()
-        payload = json.dumps({
-            "approved": body.approved,
-            "instructions": body.instructions,
-            "request_id": str(body.request_id),
-        })
-        await redis.publish(f"hitl:{body.request_id}", payload)
-        return ok({"approved": body.approved})
+        return ok(await ChatManager(db).respond_to_hitl(
+            body.request_id,
+            current_user.id,
+            body.approved,
+            body.instructions,
+        ))
     except AppError as e:
         return fail(e.code, e.message, e.status_code)

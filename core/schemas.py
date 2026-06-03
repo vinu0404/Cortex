@@ -1,7 +1,7 @@
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class LongTermMemory(BaseModel):
@@ -40,6 +40,13 @@ class Source(BaseModel):
     title: str
     url: Optional[str] = None
     page: Optional[int] = None  # knowledge base page_start
+    kb_id: Optional[str] = None
+    doc_id: Optional[str] = None
+    web_collection_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("web_collection_id", "collection_id"),
+    )
+    url_id: Optional[str] = None
 
 
 class AgentOutput(BaseModel):

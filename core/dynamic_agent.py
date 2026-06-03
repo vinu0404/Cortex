@@ -4,15 +4,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import litellm
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
+from app.common.retry import acompletion_with_retry, async_http_request_with_retry
 from app.common.token_utils import TokenUsage, calculate_usage
 from config.settings import get_settings
 from core.schemas import AgentInput, AgentOutput, Source
@@ -20,11 +12,6 @@ from tools.registry import get_registry
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
-
-def _is_retriable(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "rate" in msg or "timeout" in msg or "connection" in msg or "500" in msg or "503" in msg
 
 
 def _build_system_prompt(agent_def: dict, agent_input: AgentInput, is_embed: bool = False) -> str:
@@ -207,17 +194,6 @@ async def run_dynamic_agent(
     )
 
 
-@retry(
-    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
-    wait=wait_exponential_jitter(
-        initial=settings.LLM_RETRY_WAIT_MIN,
-        max=settings.LLM_RETRY_WAIT_MAX,
-        jitter=settings.LLM_RETRY_JITTER,
-    ),
-    retry=retry_if_exception(_is_retriable),
-    before_sleep=before_sleep_log(logger, 30),
-    reraise=True,
-)
 async def _run_with_tools(
     messages: list[dict],
     tool_schemas: list[dict],
@@ -243,7 +219,7 @@ async def _run_with_tools(
             kwargs["tools"] = tool_schemas
             kwargs["tool_choice"] = "auto"
 
-        response = await litellm.acompletion(**kwargs)
+        response = await acompletion_with_retry(**kwargs)
         msg = response.choices[0].message
         u = calculate_usage(response, model_id)
         total_input += u.input_tokens
@@ -285,7 +261,7 @@ async def _run_with_tools(
             })
 
     # Exhausted turns — final call without tools
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=msgs,
         api_key=api_key,
@@ -355,14 +331,6 @@ async def _execute_tool_calls(
     return results
 
 
-def _is_mcp_retriable(exc: Exception) -> bool:
-    try:
-        import httpx
-        return isinstance(exc, (httpx.ConnectError, httpx.TimeoutException))
-    except ImportError:
-        return False
-
-
 async def _call_mcp_tool(mcp_ctx: dict, tool_name: str, arguments: dict) -> dict:
     if mcp_ctx.get("transport_type") == "stdio":
         return await _call_mcp_tool_stdio(mcp_ctx, tool_name, arguments)
@@ -376,12 +344,6 @@ async def _call_mcp_tool(mcp_ctx: dict, tool_name: str, arguments: dict) -> dict
     )
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential_jitter(initial=1, max=4),
-    retry=retry_if_exception(_is_mcp_retriable),
-    reraise=True,
-)
 async def _call_mcp_tool_http(
     server_url: str,
     auth_type: str,
@@ -399,8 +361,7 @@ async def _call_mcp_tool_http(
             headers[auth_header_name] = token
     body = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}, "id": 1}
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(server_url, json=body, headers=headers)
-        resp.raise_for_status()
+        resp = await async_http_request_with_retry(client, "POST", server_url, json=body, headers=headers)
         data = resp.json()
     if "error" in data:
         err = data["error"]

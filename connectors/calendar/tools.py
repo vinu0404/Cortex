@@ -1,4 +1,5 @@
 """Google Calendar tool functions."""
+from app.common.retry import async_http_request_with_retry
 from tools.registry import tool
 
 
@@ -10,12 +11,13 @@ async def calendar_list_events(access_token: str, max_results: int = 10, calenda
 
     now = datetime.now(timezone.utc).isoformat()
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
+        resp = await async_http_request_with_retry(
+            client,
+            "GET",
             f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
             headers={"Authorization": f"Bearer {access_token}"},
             params={"timeMin": now, "maxResults": max_results, "singleEvents": True, "orderBy": "startTime"},
         )
-        resp.raise_for_status()
     events = []
     for e in resp.json().get("items", []):
         start = e.get("start", {})
@@ -54,12 +56,13 @@ async def calendar_create_event(
         event["attendees"] = [{"email": a} for a in attendees]
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
             headers={"Authorization": f"Bearer {access_token}"},
             json=event,
         )
-        resp.raise_for_status()
     data = resp.json()
     return {"event_id": data["id"], "html_link": data.get("htmlLink", ""), "created": True}
 
@@ -69,9 +72,10 @@ async def calendar_delete_event(access_token: str, event_id: str, calendar_id: s
     """Delete a calendar event by ID. Requires HITL approval."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.delete(
+        resp = await async_http_request_with_retry(
+            client,
+            "DELETE",
             f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{event_id}",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        resp.raise_for_status()
     return {"deleted": True, "event_id": event_id}

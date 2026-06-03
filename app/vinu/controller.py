@@ -13,7 +13,7 @@ from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.common.pagination import build_cursor_page, decode_cursor
 from app.vinu.builder import build_workspace
-from app.vinu.manager import VinuConversationManager, prepare_chat_response
+from app.vinu.manager import VinuManager
 from app.vinu.models import (
     VinuBuildRequest,
     VinuChatRequest,
@@ -43,12 +43,12 @@ async def get_settings_endpoint(
 
 @router.patch("/settings", response_model=None)
 async def update_settings_endpoint(
-    body: VinuSettingsUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+        body: VinuSettingsUpdate,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        await VinuConversationManager(db).update_agent_name(current_user.id, body.vinu_agent_name)
+        await VinuManager(db).update_agent_name(current_user.id, body.vinu_agent_name)
         return ok({"vinu_agent_name": body.vinu_agent_name})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
@@ -67,7 +67,7 @@ async def list_conversations(
 ) -> JSONResponse:
     try:
         cursor_created_at, cursor_id = decode_cursor(cursor) if cursor else (None, None)
-        items = await VinuConversationManager(db).list_conversations(
+        items = await VinuManager(db).list_conversations(
             current_user.id, limit, cursor_created_at, cursor_id
         )
         page = build_cursor_page(items, limit)
@@ -87,7 +87,7 @@ async def delete_conversation(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        await VinuConversationManager(db).delete_conversation(conv_id, current_user.id)
+        await VinuManager(db).delete_conversation(conv_id, current_user.id)
         return ok({"deleted": True})
     except AppError as e:
         return fail(e.code, e.message, e.status_code)
@@ -102,7 +102,7 @@ async def get_conversation_messages(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
-        mgr = VinuConversationManager(db)
+        mgr = VinuManager(db)
         conv = await mgr.get_conversation(conv_id, current_user.id)
         cursor_created_at, cursor_id = decode_cursor(cursor) if cursor else (None, None)
         items = await mgr.list_messages_paginated(conv_id, limit, cursor_created_at, cursor_id)
@@ -151,7 +151,7 @@ async def vinu_build(
                 try:
                     result = json.loads(data_line)
                     async with get_custom_db_context_session() as save_db:
-                        await VinuConversationManager(save_db).save_build(
+                        await VinuManager(save_db).save_build(
                             body.conversation_id, result
                         )
                 except Exception:
@@ -170,7 +170,7 @@ async def vinu_build(
 
 async def _vinu_chat_stream(body: VinuChatRequest, user: User) -> AsyncGenerator[str, None]:
     try:
-        r = await prepare_chat_response(body, user)
+        r = await VinuManager(None).prepare_chat_response(body, user)
     except Exception as exc:
         logger.error("Vinu chat preparation failed: %s", exc, exc_info=True)
         yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"

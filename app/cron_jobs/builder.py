@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 
 from app.auth.db_models import User
 from app.connectors.manager import get_auth_free_connector_slugs, get_connector_display
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 
 settings = get_settings()
@@ -102,14 +103,13 @@ async def _resolve_api_key(user: User) -> tuple[str, str]:
 
 
 async def _parse_schedule(natural_query: str, timezone: str, model_id: str, api_key: str) -> dict:
-    import litellm
     from app.common.langfuse_client import get_compiled_prompt
 
     prompt = get_compiled_prompt("cron_schedule_parser", {
         "natural_query": natural_query,
         "timezone": timezone,
     })
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
         api_key=api_key,
@@ -182,7 +182,6 @@ async def _plan_agents(
     kb_context: str,
     wc_context: str,
 ) -> dict:
-    import litellm
     from app.common.langfuse_client import get_compiled_prompt
 
     prompt = get_compiled_prompt("cron_agent_planner", {
@@ -192,7 +191,7 @@ async def _plan_agents(
         "website_collections": wc_context,
     })
     logger.debug("cron_agent_planner prompt (first 800 chars): %.800s", prompt)
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
         api_key=api_key,
@@ -218,7 +217,6 @@ async def refine_cron_plan(
     change_request: str,
     timezone: str = "UTC",
 ) -> dict:
-    import litellm
     from app.common.langfuse_client import get_compiled_prompt
     from app.cron_jobs.manager import _build_tool_connector_map
 
@@ -243,7 +241,7 @@ async def refine_cron_plan(
         "website_collections": wc_context,
     }, timezone)
     logger.debug("cron_plan_refiner prompt (first 800 chars): %.800s", prompt)
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=[{"role": "user", "content": prompt}],
         api_key=raw_key,

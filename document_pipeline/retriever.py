@@ -47,6 +47,7 @@ def _rrf_merge(dense: list[dict], sparse: list[dict], top_k: int, k: int) -> lis
             "rrf_score": scores[pid],
             "text": payload_map[pid].get("text", ""),
             "filename": payload_map[pid].get("filename", ""),
+            "kb_id": payload_map[pid].get("kb_id", ""),
             "doc_id": payload_map[pid].get("doc_id", ""),
             "page_start": payload_map[pid].get("page_start", 1),
             "page_end": payload_map[pid].get("page_end", 1),

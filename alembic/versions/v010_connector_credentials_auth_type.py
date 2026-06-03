@@ -17,4 +17,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass  # PostgreSQL cannot remove enum values; safe to leave
+    op.execute(
+        """
+        DELETE FROM connector_instances
+        USING connector_definitions
+        WHERE connector_instances.definition_id = connector_definitions.id
+          AND connector_definitions.auth_type = 'credentials'
+        """
+    )
+    op.execute("DELETE FROM connector_definitions WHERE auth_type = 'credentials'")
+    op.execute("ALTER TYPE authtypeenum RENAME TO authtypeenum_old")
+    op.execute("CREATE TYPE authtypeenum AS ENUM ('oauth2', 'apikey')")
+    op.execute(
+        "ALTER TABLE connector_definitions ALTER COLUMN auth_type TYPE authtypeenum "
+        "USING auth_type::text::authtypeenum"
+    )
+    op.execute("DROP TYPE authtypeenum_old")

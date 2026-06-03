@@ -1,4 +1,5 @@
 """Gmail tool functions. Each is auto-discovered by ToolRegistry."""
+from app.common.retry import async_http_request_with_retry
 from tools.registry import tool
 
 
@@ -10,31 +11,33 @@ async def gmail_read_mail(access_token: str, max_results: int = 10, query: str =
     if query:
         params["q"] = query
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
+        resp = await async_http_request_with_retry(
+            client,
+            "GET",
             "https://gmail.googleapis.com/gmail/v1/users/me/messages",
             headers={"Authorization": f"Bearer {access_token}"},
             params=params,
         )
-        resp.raise_for_status()
         messages = resp.json().get("messages", [])
 
     emails = []
     async with httpx.AsyncClient() as client:
         for msg in messages[:max_results]:
-            detail = await client.get(
+            detail = await async_http_request_with_retry(
+                client,
+                "GET",
                 f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg['id']}",
                 headers={"Authorization": f"Bearer {access_token}"},
                 params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
             )
-            if detail.status_code == 200:
-                headers = {h["name"]: h["value"] for h in detail.json().get("payload", {}).get("headers", [])}
-                emails.append({
-                    "id": msg["id"],
-                    "from": headers.get("From", ""),
-                    "subject": headers.get("Subject", ""),
-                    "date": headers.get("Date", ""),
-                    "snippet": detail.json().get("snippet", ""),
-                })
+            headers = {h["name"]: h["value"] for h in detail.json().get("payload", {}).get("headers", [])}
+            emails.append({
+                "id": msg["id"],
+                "from": headers.get("From", ""),
+                "subject": headers.get("Subject", ""),
+                "date": headers.get("Date", ""),
+                "snippet": detail.json().get("snippet", ""),
+            })
     return {"emails": emails, "count": len(emails)}
 
 
@@ -61,12 +64,13 @@ async def gmail_send_mail(
 
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
             headers={"Authorization": f"Bearer {access_token}"},
             json={"raw": raw},
         )
-        resp.raise_for_status()
     return {"sent": True, "message_id": resp.json().get("id")}
 
 
@@ -88,12 +92,13 @@ async def gmail_create_draft(
 
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
             headers={"Authorization": f"Bearer {access_token}"},
             json={"message": {"raw": raw}},
         )
-        resp.raise_for_status()
     return {"draft_id": resp.json().get("id"), "created": True}
 
 
@@ -102,10 +107,11 @@ async def gmail_list_labels(access_token: str) -> dict:
     """Fetch all Gmail labels for the user."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
+        resp = await async_http_request_with_retry(
+            client,
+            "GET",
             "https://gmail.googleapis.com/gmail/v1/users/me/labels",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        resp.raise_for_status()
     labels = [{"id": l["id"], "name": l["name"]} for l in resp.json().get("labels", [])]
     return {"labels": labels}

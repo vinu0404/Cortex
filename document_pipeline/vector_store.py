@@ -15,6 +15,7 @@ from qdrant_client.models import (
 )
 
 from config.settings import get_settings
+from app.common.retry import async_qdrant_call
 from document_pipeline.chunker import Chunk
 
 settings = get_settings()
@@ -35,9 +36,10 @@ async def ensure_collection(kb_id: str, redis_client=None) -> None:
     async def _create_if_missing() -> None:
         client = _client()
         try:
-            collections = await client.get_collections()
+            collections = await async_qdrant_call(client.get_collections)
             if name not in {c.name for c in collections.collections}:
-                await client.create_collection(
+                await async_qdrant_call(
+                    client.create_collection,
                     collection_name=name,
                     vectors_config=VectorParams(size=settings.KB_EMBEDDING_DIMS, distance=Distance.COSINE),
                 )
@@ -56,7 +58,8 @@ async def create_text_index(kb_id: str) -> None:
     """Create full-text payload index on 'text' field. Idempotent."""
     client = _client()
     try:
-        await client.create_payload_index(
+        await async_qdrant_call(
+            client.create_payload_index,
             collection_name=_collection_name(kb_id),
             field_name="text",
             field_schema=TextIndexParams(type="text", tokenizer=TokenizerType.WORD),
@@ -65,7 +68,7 @@ async def create_text_index(kb_id: str) -> None:
         # Only swallow "already exists" (status 400) — re-raise real errors
         msg = str(e).lower()
         if "already exists" in msg or "400" in msg:
-            pass
+            logger.debug("Text index already exists for kb %s", kb_id)
         else:
             logger.error("Failed to create text index for kb %s: %s", kb_id, e)
             raise
@@ -100,7 +103,7 @@ async def upsert_chunks(
             )
             for i, chunk in enumerate(chunks)
         ]
-        await client.upsert(collection_name=_collection_name(kb_id), points=points)
+        await async_qdrant_call(client.upsert, collection_name=_collection_name(kb_id), points=points)
         logger.info("Upserted %d points to Qdrant collection %s", len(points), _collection_name(kb_id))
     finally:
         await client.close()
@@ -109,7 +112,8 @@ async def upsert_chunks(
 async def delete_document_chunks(kb_id: str, doc_id: str) -> None:
     client = _client()
     try:
-        await client.delete(
+        await async_qdrant_call(
+            client.delete,
             collection_name=_collection_name(kb_id),
             points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
         )
@@ -125,7 +129,7 @@ async def delete_document_chunks(kb_id: str, doc_id: str) -> None:
 async def delete_collection(kb_id: str) -> None:
     client = _client()
     try:
-        await client.delete_collection(_collection_name(kb_id))
+        await async_qdrant_call(client.delete_collection, _collection_name(kb_id))
     except Exception:
         logger.error("Failed to delete Qdrant collection for kb %s", kb_id, exc_info=True)
     finally:
@@ -135,7 +139,8 @@ async def delete_collection(kb_id: str) -> None:
 async def dense_search(kb_id: str, query_embedding: list[float], top_k: int) -> list[dict]:
     client = _client()
     try:
-        results = await client.search(
+        results = await async_qdrant_call(
+            client.search,
             collection_name=_collection_name(kb_id),
             query_vector=query_embedding,
             limit=top_k,
@@ -144,7 +149,7 @@ async def dense_search(kb_id: str, query_embedding: list[float], top_k: int) -> 
         return [{"id": str(r.id), "score": r.score, "payload": r.payload} for r in results]
     except Exception:
         logger.error("Dense search failed for kb %s", kb_id, exc_info=True)
-        return []
+        raise
     finally:
         await client.close()
 
@@ -153,7 +158,8 @@ async def text_search(kb_id: str, query: str, top_k: int) -> list[dict]:
     """Keyword search via Qdrant payload text index."""
     client = _client()
     try:
-        results, _ = await client.scroll(
+        results, _ = await async_qdrant_call(
+            client.scroll,
             collection_name=_collection_name(kb_id),
             scroll_filter=Filter(must=[FieldCondition(key="text", match=MatchText(text=query))]),
             limit=top_k,
@@ -162,6 +168,6 @@ async def text_search(kb_id: str, query: str, top_k: int) -> list[dict]:
         return [{"id": str(r.id), "score": 1.0, "payload": r.payload} for r in results]
     except Exception:
         logger.error("Text search failed for kb %s", kb_id, exc_info=True)
-        return []
+        raise
     finally:
         await client.close()

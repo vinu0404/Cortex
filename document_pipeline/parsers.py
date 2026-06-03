@@ -5,8 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import litellm
-
+from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 
 settings = get_settings()
@@ -268,13 +268,14 @@ async def _parse_image(content: bytes, filename: str, openai_api_key: str) -> li
     mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp", "gif": "gif", "bmp": "bmp"}
     mime = f"image/{mime_map.get(ext, ext)}"
     b64 = base64.b64encode(content).decode()
+    prompt_text = get_compiled_prompt("rag_image_parser", {"filename": filename})
 
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=settings.VISION_MODEL,
         messages=[{
             "role": "user",
             "content": [
-                {"type": "text", "text": "Describe the content of this image in detail, including any text, charts, diagrams, or visual information present."},
+                {"type": "text", "text": prompt_text},
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
             ],
         }],

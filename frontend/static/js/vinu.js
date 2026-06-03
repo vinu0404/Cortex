@@ -503,7 +503,7 @@ function _vinuPlanCardHTML(plan, buildResult) {
       </div>`;
 
   return `
-    <div style="font-size:13px;font-weight:700;margin-bottom:4px;letter-spacing:-.02em;">${_vesc(plan.workspace_name || 'Workspace Plan')}</div>
+    <div style="font-size:13px;font-weight:700;margin-bottom:4px;letter-spacing:0;">${_vesc(plan.workspace_name || 'Workspace Plan')}</div>
     <div style="color:var(--text-muted);font-size:12px;margin-bottom:4px;">${_vesc(plan.workspace_description || '')}</div>
     ${plan.plan_reasoning ? `<div style="font-size:11px;padding:6px 8px;background:var(--surface);border-left:2px solid var(--accent);border-radius:2px;margin-bottom:10px;color:var(--text-muted);">${_vesc(plan.plan_reasoning)}</div>` : '<div style="margin-bottom:10px;"></div>'}
     ${agents}

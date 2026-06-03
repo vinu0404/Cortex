@@ -1,18 +1,22 @@
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+NonEmptyTrimmedString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+OptionalNonEmptyTrimmedString = Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class WorkspaceCreate(BaseModel):
-    name: str
-    description: str | None = None
+    name: NonEmptyTrimmedString
+    description: NonEmptyTrimmedString
     workspace_type: str = "standard"
 
 
 class WorkspaceUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: OptionalNonEmptyTrimmedString = None
+    description: OptionalNonEmptyTrimmedString = None
 
 
 class WorkspaceResponse(BaseModel):

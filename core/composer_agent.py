@@ -1,17 +1,10 @@
 import json
 import logging
 
-import litellm
 from pydantic import BaseModel, Field
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
 
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from app.common.token_utils import TokenUsage, calculate_usage
 from config.settings import get_settings
 from core.schemas import AgentOutput, LongTermMemory, SuggestionsOutput
@@ -34,22 +27,6 @@ class ComposerOutput(BaseModel):
     artifacts: list[ComposerArtifact] = Field(default_factory=list)
 
 
-def _is_retriable(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "rate" in msg or "timeout" in msg or "connection" in msg or "500" in msg or "503" in msg
-
-
-@retry(
-    stop=stop_after_attempt(settings.LLM_MAX_RETRIES),
-    wait=wait_exponential_jitter(
-        initial=settings.LLM_RETRY_WAIT_MIN,
-        max=settings.LLM_RETRY_WAIT_MAX,
-        jitter=settings.LLM_RETRY_JITTER,
-    ),
-    retry=retry_if_exception(_is_retriable),
-    before_sleep=before_sleep_log(logger, 30),
-    reraise=True,
-)
 async def _call_composer_llm(
     prompt_text: str,
     model_id: str,
@@ -61,7 +38,7 @@ async def _call_composer_llm(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt_text})
-    response = await litellm.acompletion(
+    response = await acompletion_with_retry(
         model=model_id,
         messages=messages,
         response_format={"type": "json_object"},
@@ -177,7 +154,7 @@ async def _generate_suggestions(
             "conversation_summary": summary,
             "last_response": last_response[:400],
         })
-        resp = await litellm.acompletion(
+        resp = await acompletion_with_retry(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
             response_format={"type": "json_object"},

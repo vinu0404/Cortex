@@ -64,6 +64,9 @@ class AgentRunRecord(Base):
 
 
 class PlanRunModelService:
+    async def get_plan_run(self, db: AsyncSession, plan_run_id: uuid.UUID) -> PlanRun | None:
+        return await db.get(PlanRun, plan_run_id)
+
     async def create_plan_run(
         self,
         db: AsyncSession,

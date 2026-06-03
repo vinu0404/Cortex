@@ -62,7 +62,7 @@ def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
                 completion_tokens=output_tokens,
             )
             return prompt_cost + completion_cost
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("litellm.cost_per_token failed for model alias %r: %s", model_name, exc)
     logger.warning("litellm.cost_per_token failed for model %r — cost recorded as 0.0", model)
     return 0.0

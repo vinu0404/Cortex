@@ -1,4 +1,5 @@
 """Salesforce tool functions."""
+from app.common.retry import async_http_request_with_retry
 from tools.registry import tool
 
 
@@ -7,12 +8,13 @@ async def salesforce_query(access_token: str, instance_url: str, soql: str) -> d
     """Run a SOQL query against Salesforce. Returns matching records."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
+        resp = await async_http_request_with_retry(
+            client,
+            "GET",
             f"{instance_url}/services/data/v59.0/query",
             headers={"Authorization": f"Bearer {access_token}"},
             params={"q": soql},
         )
-        resp.raise_for_status()
     data = resp.json()
     return {"records": data.get("records", []), "total_size": data.get("totalSize", 0)}
 
@@ -22,11 +24,12 @@ async def salesforce_get_record(access_token: str, instance_url: str, sobject: s
     """Fetch a single Salesforce record by its ID and object type."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
+        resp = await async_http_request_with_retry(
+            client,
+            "GET",
             f"{instance_url}/services/data/v59.0/sobjects/{sobject}/{record_id}",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        resp.raise_for_status()
     return resp.json()
 
 
@@ -40,12 +43,13 @@ async def salesforce_create_record(
     """Create a new Salesforce record. Requires HITL approval."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
+        resp = await async_http_request_with_retry(
+            client,
+            "POST",
             f"{instance_url}/services/data/v59.0/sobjects/{sobject}",
             headers={"Authorization": f"Bearer {access_token}"},
             json=fields,
         )
-        resp.raise_for_status()
     data = resp.json()
     return {"id": data.get("id"), "success": data.get("success", False)}
 
@@ -61,10 +65,11 @@ async def salesforce_update_record(
     """Update fields on a Salesforce record. Requires HITL approval."""
     import httpx
     async with httpx.AsyncClient() as client:
-        resp = await client.patch(
+        resp = await async_http_request_with_retry(
+            client,
+            "PATCH",
             f"{instance_url}/services/data/v59.0/sobjects/{sobject}/{record_id}",
             headers={"Authorization": f"Bearer {access_token}"},
             json=fields,
         )
-        resp.raise_for_status()
     return {"updated": True, "record_id": record_id}

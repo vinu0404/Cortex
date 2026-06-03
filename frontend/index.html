@@ -7,7 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     /* Vinu sidebar */
     .vinu-msg { display:flex; gap:10px; }
@@ -38,7 +38,7 @@
 
 <!-- Nav -->
 <nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
-  <span style="font-weight:700; font-size:15px; letter-spacing:-0.5px;">Cortex</span>
+  <span style="font-weight:700; font-size:15px; letter-spacing:0;">Cortex</span>
   <div style="display:flex; gap:8px; align-items:center;">
     <span id="user-email" style="font-size:12px; color:var(--text-faint); margin-right:4px;"></span>
     <a href="/knowledge-bases.html" class="btn btn-nav btn-sm">Knowledge Bases</a>
@@ -87,8 +87,8 @@
         <input id="ws-name" class="input" placeholder="My Agent Pipeline" required>
       </div>
       <div class="form-group">
-        <label>Description <span style="color:var(--text-muted); font-weight:400;">(optional)</span></label>
-        <textarea id="ws-desc" class="textarea" placeholder="What does this workspace do?"></textarea>
+        <label>Description</label>
+        <textarea id="ws-desc" class="textarea" placeholder="What does this workspace do?" required></textarea>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button type="button" onclick="hideModal('modal-create-ws')" class="btn btn-secondary">Cancel</button>
@@ -114,7 +114,7 @@
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M7 2v10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>
       </div>
       <div>
-        <div id="vinu-title" style="font-weight:700;font-size:14px;letter-spacing:-.02em;">Vinu</div>
+        <div id="vinu-title" style="font-weight:700;font-size:14px;letter-spacing:0;">Vinu</div>
         <div id="vinu-subtitle" style="font-size:11px;color:var(--text-muted);">AI Workspace Builder</div>
       </div>
     </div>
@@ -159,7 +159,7 @@
 
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script src="/static/js/vinu.js"></script>
 <script>
   if (window.marked) marked.setOptions({ breaks: true, gfm: true });
@@ -171,14 +171,28 @@
   let hasNext = false;
 
   async function loadWorkspaces(reset = true) {
-    if (reset) { nextCursor = null; document.getElementById('workspaces-grid').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:160px;color:var(--text-muted);"><div class="spinner"></div></div>'; }
+    if (reset) {
+      nextCursor = null;
+      document.getElementById('workspaces-grid').innerHTML = `
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>`;
+    }
     try {
       const params = new URLSearchParams({ limit: 20 });
       if (nextCursor) params.set('cursor', nextCursor);
       const data = await apiGet(`workspaces?${params}`);
       if (reset) document.getElementById('workspaces-grid').innerHTML = '';
       if (!data.items.length && reset) {
-        document.getElementById('workspaces-grid').innerHTML = '<div style="color:var(--text-muted); padding:40px 0; text-align:center; grid-column:1/-1;">No workspaces yet — create one to get started.</div>';
+        document.getElementById('workspaces-grid').innerHTML = `
+          <div class="empty-state">
+            <div>
+              <div class="empty-graphic"></div>
+              <h3>No workspaces yet</h3>
+              <p>Create your first agent pipeline and start wiring tools, memory, and conversations.</p>
+              <button onclick="showModal('modal-create-ws')" class="btn btn-primary" style="margin-top:16px;">New Workspace</button>
+            </div>
+          </div>`;
         return;
       }
       data.items.forEach(ws => appendCard(ws));
@@ -195,9 +209,9 @@
     card.style.cursor = 'pointer';
     card.innerHTML = `
       <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:12px;">
-        <div style="display:flex; align-items:center; gap:6px;">
-          <h3 style="font-size:15px; font-weight:600;">${esc(ws.name)}</h3>
-          ${ws.workspace_type === 'cron' ? '<span class="badge" style="font-size:10px; background:var(--surface-2);">Cron</span>' : ''}
+        <div style="min-width:0;">
+          <h3 style="font-size:15px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(ws.name)}</h3>
+          ${ws.workspace_type === 'cron' ? '<span class="badge" style="font-size:10px; background:var(--surface-2); margin-top:4px;">Cron</span>' : ''}
         </div>
         <span class="badge">${new Date(ws.created_at).toLocaleDateString()}</span>
       </div>
@@ -215,11 +229,17 @@
   async function createWorkspace(e) {
     e.preventDefault();
     const btn = document.getElementById('create-ws-btn');
+    const description = document.getElementById('ws-desc').value.trim();
+    if (!description) {
+      toast('Description is required.', 'error');
+      document.getElementById('ws-desc').focus();
+      return;
+    }
     btn.disabled = true; btn.textContent = 'Creating…';
     try {
       await apiPost('workspaces', {
-        name: document.getElementById('ws-name').value,
-        description: document.getElementById('ws-desc').value || null,
+        name: document.getElementById('ws-name').value.trim(),
+        description,
       });
       hideModal('modal-create-ws');
       document.getElementById('ws-name').value = '';

@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Knowledge Bases</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
   <style>
     .kb-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; background:var(--bg); cursor:pointer; transition:border-color .15s; }
     .kb-card:hover { border-color:var(--primary); }
     .kb-card.active { border-color:var(--primary); background:var(--surface); }
+    .doc-row-highlight { background:rgba(17,17,17,.04); box-shadow:inset 3px 0 0 rgba(17,17,17,.78); }
     .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
     .status-pending { background:#f59e0b; }
     .status-uploading, .status-processing { background:#3b82f6; }
@@ -118,12 +119,15 @@
   </div>
 </div>
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=api-v1-ui-3"></script>
 <script>
   requireAuth();
 
   let kbs = [];
-  let activeKbId = new URLSearchParams(location.search).get('id') || null;
+  const pageParams = new URLSearchParams(location.search);
+  let activeKbId = pageParams.get('id') || null;
+  let pendingKbDocId = pageParams.get('doc') || null;
+  let pendingKbAutoview = pageParams.get('open') === '1';
   let docs = [];
   let sseSource = null;
 
@@ -200,8 +204,21 @@
 
   function selectKb(id) {
     activeKbId = id;
+    syncKbQueryState();
     renderKbList();
     loadDocs(id);
+  }
+
+  function syncKbQueryState() {
+    const params = new URLSearchParams(location.search);
+    if (activeKbId) params.set('id', activeKbId);
+    else params.delete('id');
+    if (pendingKbDocId) params.set('doc', pendingKbDocId);
+    else params.delete('doc');
+    if (pendingKbAutoview && pendingKbDocId) params.set('open', '1');
+    else params.delete('open');
+    const next = params.toString() ? `${location.pathname}?${params.toString()}` : location.pathname;
+    history.replaceState({}, '', next);
   }
 
   async function loadDocs(kbId) {
@@ -209,6 +226,7 @@
       docs = await apiGet(`knowledge-bases/${kbId}/documents`) || [];
       const kb = kbs.find(k => k.id === kbId);
       renderDocPanel(kb);
+      await applyKbDeepLinkState(kbId);
     } catch (err) { toast(err.message, 'error'); }
   }
 
@@ -224,7 +242,7 @@
     const hasReindexable = docs.some(d => d.processing_status === 'failed' || d.processing_status === 'cancelled');
 
     const docsHtml = docs.length ? docs.map(d => `
-      <tr style="border-top:1px solid var(--border);">
+      <tr id="doc-row-${d.id}" style="border-top:1px solid var(--border);">
         <td style="padding:10px 8px; width:32px;">
           <input type="checkbox" class="doc-checkbox" value="${d.id}" onchange="updateBulkBar()">
         </td>
@@ -380,6 +398,20 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
+  async function applyKbDeepLinkState(kbId) {
+    if (!pendingKbDocId || kbId !== activeKbId) return;
+    const row = document.getElementById(`doc-row-${pendingKbDocId}`);
+    if (!row) return;
+    row.classList.add('doc-row-highlight');
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    if (pendingKbAutoview) {
+      pendingKbAutoview = false;
+      syncKbQueryState();
+      await viewDoc(kbId, pendingKbDocId);
+    }
+  }
+
   async function retryDoc(kbId, docId) {
     try {
       await apiPost(`knowledge-bases/${kbId}/documents/${docId}/retry`, {});
@@ -468,7 +500,7 @@
   function startSse() {
     if (sseSource) sseSource.close();
     const token = getToken();
-    sseSource = new EventSource(`/knowledge-bases/status/stream?token=${encodeURIComponent(token)}`);
+    sseSource = new EventSource(`/api/v1/knowledge-bases/status/stream?token=${encodeURIComponent(token)}`);
     sseSource.addEventListener('message', async e => {
       if (!activeKbId) return;
       try {
@@ -495,6 +527,7 @@
 
   _populateTzSelect();
   initTimezone().then(() => _populateTzSelect());
+  syncKbQueryState();
   loadKbs();
   startSse();
 </script>

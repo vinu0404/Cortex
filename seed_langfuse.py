@@ -231,6 +231,40 @@ Keep questions short (under 80 chars), natural, and directly related to the topi
         "config": {"type": "text", "label": "production"},
     },
     {
+        "name": "rag_image_parser",
+        "prompt": """\
+Describe the content of this image in detail for retrieval indexing.
+
+## Filename
+{{filename}}
+
+Include:
+- Visible text
+- Charts, diagrams, tables, UI screenshots, or forms
+- Important entities, labels, numbers, and relationships
+- A concise description of the visual layout when it helps future search
+""",
+        "config": {"type": "text", "label": "production"},
+    },
+    {
+        "name": "rag_reranker",
+        "prompt": """\
+Score this passage's relevance to the query on a scale of 1-10.
+
+## Query
+{{query}}
+
+## Passage
+{{passage}}
+
+Return only JSON:
+{
+  "score": 0
+}
+""",
+        "config": {"type": "text", "label": "production"},
+    },
+    {
         "name": "vinu_system_prompt",
         "prompt": """\
 You are {{agent_name}}, an expert AI workspace architect for Cortex — a multi-agent AI platform. You design and deploy custom agent pipelines that exactly match what the user asked for — nothing more, nothing less.

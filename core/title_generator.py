@@ -1,8 +1,7 @@
 import logging
 
-import litellm
-
 from app.common.langfuse_client import get_compiled_prompt
+from app.common.retry import acompletion_with_retry
 from config.settings import get_settings
 from core.schemas import TitleGenerationOutput
 
@@ -23,7 +22,7 @@ async def generate_title(
         "response_preview": response[:200],
     })
     try:
-        resp = await litellm.acompletion(
+        resp = await acompletion_with_retry(
             model=model_id,
             messages=[{"role": "user", "content": prompt_text}],
             response_format={"type": "json_object"},

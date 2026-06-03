@@ -1,5 +1,6 @@
 import httpx
 
+from app.common.retry import async_http_request_with_retry
 from config.settings import get_settings
 from connectors.base import BaseConnector
 
@@ -26,7 +27,9 @@ class GitHubConnector(BaseConnector):
 
     async def handle_callback(self, code: str, state: str) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
+            resp = await async_http_request_with_retry(
+                client,
+                "POST",
                 _TOKEN_URL,
                 headers={"Accept": "application/json"},
                 data={
@@ -36,7 +39,6 @@ class GitHubConnector(BaseConnector):
                     "redirect_uri": settings.GITHUB_REDIRECT_URI,
                 },
             )
-            resp.raise_for_status()
             data = resp.json()
 
         username = await self._fetch_username(data["access_token"])
@@ -53,10 +55,11 @@ class GitHubConnector(BaseConnector):
 
     async def _fetch_username(self, access_token: str) -> str:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
+            resp = await async_http_request_with_retry(
+                client,
+                "GET",
                 "https://api.github.com/user",
                 headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
             )
-            if resp.status_code == 200:
-                return resp.json().get("login", "github-user")
+            return resp.json().get("login", "github-user")
         return "github-user"

@@ -2,6 +2,7 @@ from celery import Celery
 from config.settings import get_settings
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from celery.signals import worker_process_init
 import database.session as _db
 settings = get_settings()
 
@@ -23,9 +24,6 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     redbeat_redis_url=settings.CELERY_BROKER_URL,
 )
-
-
-from celery.signals import worker_process_init
 
 
 @worker_process_init.connect
