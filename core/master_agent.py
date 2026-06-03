@@ -10,7 +10,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from app.common.exceptions import PlanValidationError
+from app.common.exceptions import CircularDependencyError, PlanValidationError
 from app.common.langfuse_client import get_compiled_prompt
 from config.settings import get_settings
 from core.schemas import ExecutionPlan, LongTermMemory
@@ -43,7 +43,7 @@ async def _call_master_llm(
     model_id: str,
     api_key: str,
     conversation_id: str,
-) -> ExecutionPlan:
+) -> tuple[ExecutionPlan, str]:
     response = await litellm.acompletion(
         model=model_id,
         messages=messages,
@@ -56,7 +56,7 @@ async def _call_master_llm(
         },
     )
     raw = response.choices[0].message.content
-    return ExecutionPlan.model_validate_json(raw)
+    return ExecutionPlan.model_validate_json(raw), raw
 
 
 async def generate_plan(
@@ -123,24 +123,48 @@ async def generate_plan(
 
     messages = [{"role": "user", "content": prompt_text}]
 
-    try:
-        plan = await _call_master_llm(messages, model_id, api_key, conversation_id)
-    except Exception as e:
-        raise PlanValidationError(f"Master agent failed to generate plan: {e}") from e
+    last_error: str | None = None
+    last_raw: str | None = None
+    for attempt in range(3):
+        if attempt > 0 and last_raw and last_error:
+            messages.append({"role": "assistant", "content": last_raw})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"Your plan failed validation: {last_error}\n"
+                    "Fix the issue and return a corrected plan as JSON. "
+                    "Only use agent names from the list provided. "
+                    "Ensure all depends_on values reference agent_ids defined in the same plan. "
+                    "Each step must have a unique agent_id. "
+                    "Do not create circular dependencies."
+                ),
+            })
+        try:
+            plan, last_raw = await _call_master_llm(messages, model_id, api_key, conversation_id)
+        except Exception as e:
+            raise PlanValidationError(f"Master agent failed to generate plan: {e}") from e
+        try:
+            _validate_plan(plan, agents_db)
+            return plan
+        except PlanValidationError as e:
+            last_error = str(e)
+            logger.warning("Plan validation failed (attempt %d/3): %s", attempt + 1, last_error)
 
-    _validate_plan(plan, agents_db)
-    return plan
+    raise PlanValidationError(f"Plan validation failed after 3 attempts. Last error: {last_error}")
 
 
 def _validate_plan(plan: ExecutionPlan, agents_db: dict[str, dict]) -> None:
+    from core.dependency_resolver import resolve_stages
+    from core.schemas import ResolvedAgentTask
+
     known = set(agents_db.keys())
     for step in plan.steps:
         if step.agent_name not in known:
             raise PlanValidationError(
-                f"Unknown agent '{step.agent_name}' in plan. Known: {sorted(known)}"
+                f"Unknown agent '{step.agent_name}'. Available agents: {sorted(known)}"
             )
     if len({step.agent_id for step in plan.steps}) != len(plan.steps):
-        raise PlanValidationError("Duplicate agent_id in plan")
+        raise PlanValidationError("Duplicate agent_id in plan — each step must have a unique agent_id")
     ids = {step.agent_id for step in plan.steps}
     for step in plan.steps:
         for dep in step.depends_on:
@@ -148,3 +172,13 @@ def _validate_plan(plan: ExecutionPlan, agents_db: dict[str, dict]) -> None:
                 raise PlanValidationError(
                     f"Step '{step.agent_id}' depends on unknown runtime_id '{dep}'"
                 )
+    try:
+        resolve_stages([
+            ResolvedAgentTask(
+                agent_id=s.agent_id, agent_name=s.agent_name,
+                task=s.task, depends_on=s.depends_on, tools=s.tools,
+            )
+            for s in plan.steps
+        ])
+    except CircularDependencyError:
+        raise PlanValidationError("Circular dependency detected — agents cannot depend on each other in a cycle")

@@ -3,6 +3,7 @@
 let vinuConversationId = null;
 let vinuPhase = 'gathering';
 let vinuPlan = null;
+let _vinuLastPlanCard = null;
 let vinuOpen = false;
 let vinuView = 'list'; // 'setup' | 'list' | 'chat'
 let vinuAgentName = null;
@@ -200,9 +201,10 @@ async function startNewVinuChat() {
   _vinuShowView('chat', 'New Chat');
   vinuConversationId = null;
   vinuPlan = null;
+  _vinuLastPlanCard = null;
   vinuPhase = 'gathering';
   document.getElementById('vinu-messages').innerHTML = '';
-  document.getElementById('vinu-plan').style.display = 'none';
+  _vinuHidePlan();
   document.getElementById('vinu-build-progress').style.display = 'none';
   document.getElementById('vinu-input').value = '';
   _vinuAppendMsg('assistant', `Hey there! I'm ${vinuAgentName || 'Vinu'}, your AI workspace builder. Tell me — what do you want to build? I can help with support bots, research assistants, sales agents, code reviewers, and more!`);
@@ -212,11 +214,12 @@ async function startNewVinuChat() {
 async function openVinuChat(convId, convName) {
   vinuConversationId = convId;
   vinuPlan = null;
+  _vinuLastPlanCard = null;
   vinuPhase = 'gathering';
   _vinuShowView('chat', convName || 'Loading…');
   const msgs = document.getElementById('vinu-messages');
   msgs.innerHTML = '';
-  document.getElementById('vinu-plan').style.display = 'none';
+  _vinuHidePlan();
   document.getElementById('vinu-build-progress').style.display = 'none';
 
   const loadingNote = document.createElement('div');
@@ -236,6 +239,7 @@ async function openVinuChat(convId, convName) {
     if (data && data.last_plan) {
       vinuPlan = data.last_plan;
       _vinuAppendPlanMsg(data.last_plan, data.last_build || null);
+      if (!data.last_build) _vinuSetInputLocked(true);
     }
   } catch (e) {
     loadingNote.textContent = 'Could not load history — continue the conversation below.';
@@ -493,9 +497,9 @@ function _vinuPlanCardHTML(plan, buildResult) {
         ${buildResult.workspace_id ? `<a href="/workspace.html?id=${encodeURIComponent(buildResult.workspace_id)}" class="btn btn-primary btn-sm" style="flex:1;text-align:center;">Open Workspace</a>` : ''}
       </div>
       ${_vinuBuildActionCards(buildResult)}`
-    : `<div style="display:flex;gap:8px;margin-top:12px;">
+    : `<div class="vinu-plan-actions" style="display:flex;gap:8px;margin-top:12px;">
         <button onclick="buildVinuWorkspace()" class="btn btn-primary btn-sm" style="flex:1;">Build Workspace</button>
-        <button onclick="sendVinuMessage('Please refine the plan.')" class="btn btn-secondary btn-sm">Tweak</button>
+        <button onclick="_vinuShowTweakInput()" class="btn btn-secondary btn-sm">Tweak</button>
       </div>`;
 
   return `
@@ -564,22 +568,73 @@ function _vinuBuildActionCards(buildResult) {
 }
 
 function _vinuRenderPlan(plan) {
-  const planEl = document.getElementById('vinu-plan');
-  planEl.style.display = 'block';
-  planEl.innerHTML = _vinuPlanCardHTML(plan, null);
+  _vinuAppendPlanMsg(plan, null);
+  _vinuSetInputLocked(true);
+}
+
+function _vinuHidePlan() {
+  document.getElementById('vinu-plan').style.display = 'none';
+  _vinuSetInputLocked(false);
+  if (_vinuLastPlanCard) {
+    const actionsDiv = _vinuLastPlanCard.querySelector('.vinu-plan-actions');
+    if (actionsDiv) actionsDiv.style.display = 'none';
+  }
+}
+
+function _vinuSetInputLocked(locked) {
+  const input = document.getElementById('vinu-input');
+  const btn = document.getElementById('vinu-send-btn');
+  if (input) {
+    input.disabled = locked;
+    input.placeholder = locked ? 'Build or tweak the plan above…' : 'Describe what you want to build…';
+  }
+  if (btn) btn.disabled = locked || false;
+}
+
+function _vinuShowTweakInput() {
+  const planEl = _vinuLastPlanCard;
+  if (!planEl) return;
+  const existing = planEl.querySelector('.vinu-tweak-row');
+  if (existing) { existing.remove(); return; }
+  const row = document.createElement('div');
+  row.className = 'vinu-tweak-row';
+  row.style.cssText = 'margin-top:10px;display:flex;gap:6px;border-top:1px solid var(--border);padding-top:10px;';
+  const ta = document.createElement('input');
+  ta.type = 'text';
+  ta.placeholder = 'e.g. Add a coding agent, remove email tool…';
+  ta.style.cssText = 'flex:1;padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text);';
+  const sendBtn = document.createElement('button');
+  sendBtn.textContent = 'Send';
+  sendBtn.className = 'btn btn-primary btn-sm';
+  sendBtn.disabled = true;
+  ta.addEventListener('input', () => { sendBtn.disabled = !ta.value.trim(); });
+  sendBtn.onclick = () => {
+    const msg = ta.value.trim();
+    if (!msg) return;
+    _vinuHidePlan();
+    vinuPlan = null;
+    sendVinuMessage(msg);
+  };
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) sendBtn.click(); });
+  row.appendChild(ta);
+  row.appendChild(sendBtn);
+  planEl.appendChild(row);
+  ta.focus();
 }
 
 function _vinuAppendPlanMsg(plan, buildResult) {
   const msgs = document.getElementById('vinu-messages');
   const card = document.createElement('div');
+  card.className = 'vinu-plan-card';
   card.style.cssText = 'border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;background:var(--surface);font-size:13px;';
   card.innerHTML = _vinuPlanCardHTML(plan, buildResult || null);
   msgs.appendChild(card);
   msgs.scrollTop = msgs.scrollHeight;
+  if (!buildResult) _vinuLastPlanCard = card;
 }
 
 function _vinuShowBuiltState(buildResult) {
-  document.getElementById('vinu-plan').style.display = 'none';
+  _vinuHidePlan();
   document.getElementById('vinu-build-progress').style.display = 'none';
   const msgs = document.getElementById('vinu-messages');
   const card = document.createElement('div');
@@ -610,7 +665,7 @@ async function buildVinuWorkspace() {
   msgs.appendChild(progressEl);
   msgs.scrollTop = msgs.scrollHeight;
 
-  document.getElementById('vinu-plan').style.display = 'none';
+  _vinuHidePlan();
 
   const payload = { plan: vinuPlan };
   if (vinuConversationId) payload.conversation_id = vinuConversationId;

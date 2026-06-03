@@ -52,6 +52,13 @@
     .msg-content table { border-collapse:collapse; font-size:13px; margin:6px 0; }
     .msg-content th, .msg-content td { border:1px solid var(--border); padding:4px 8px; }
     .msg-content th { background:var(--surface); font-weight:600; }
+    .retry-badge { font-size:10px; font-weight:600; padding:1px 5px; border-radius:3px; background:#fef2f2; color:#ef4444; margin-left:4px; }
+    .node-clickable { cursor:pointer; }
+    .node-clickable:hover { opacity:0.85; }
+    .inspect-modal { position:fixed; top:0; left:0; right:0; bottom:0; z-index:600; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.4); }
+    .inspect-panel { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); width:560px; max-width:95vw; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.2); }
+    .inspect-tab { padding:6px 14px; font-size:12px; font-weight:500; border-bottom:2px solid transparent; cursor:pointer; color:var(--text-muted); background:none; border-top:none; border-left:none; border-right:none; }
+    .inspect-tab.active { border-bottom-color:var(--accent); color:var(--accent); }
   </style>
 </head>
 <body style="height:100vh; overflow:hidden;">
@@ -110,6 +117,77 @@
   </div>
 </div>
 
+<!-- Agent inspect modal -->
+<div id="agent-inspect-modal" class="inspect-modal hidden" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="inspect-panel">
+    <div style="padding:14px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <span id="ai-agent-name" style="font-weight:600; font-size:14px;"></span>
+        <span id="ai-attempt" style="font-size:11px; color:var(--text-muted); margin-left:8px;"></span>
+      </div>
+      <button onclick="document.getElementById('agent-inspect-modal').classList.add('hidden')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text-muted);">✕</button>
+    </div>
+    <div style="display:flex; border-bottom:1px solid var(--border);">
+      <button id="ai-tab-input" class="inspect-tab active" onclick="_switchInspectTab('input')">Input</button>
+      <button id="ai-tab-output" class="inspect-tab" onclick="_switchInspectTab('output')">Output</button>
+    </div>
+    <div style="overflow-y:auto; padding:14px 16px; flex:1;">
+      <div id="ai-panel-input">
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Task</div>
+          <pre id="ai-input-task" style="font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border);"></pre>
+        </div>
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Tools</div>
+          <div id="ai-input-tools" style="font-size:12px; font-family:monospace; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border);"></div>
+        </div>
+        <div>
+          <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Dependency Outputs</div>
+          <pre id="ai-input-deps" style="font-size:11px; white-space:pre-wrap; word-break:break-word; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border); max-height:200px; overflow-y:auto;"></pre>
+        </div>
+      </div>
+      <div id="ai-panel-output" style="display:none;">
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Response</div>
+          <pre id="ai-output-data" style="font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border); max-height:250px; overflow-y:auto;"></pre>
+        </div>
+        <div>
+          <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Error</div>
+          <div id="ai-output-error" style="font-size:12px; font-family:monospace; color:#ef4444; background:#fef2f2; padding:8px; border-radius:4px; border:1px solid #fecaca;"></div>
+        </div>
+      </div>
+    </div>
+    <div id="ai-retry-section" style="display:none; padding:12px 16px; border-top:1px solid var(--border); gap:8px; flex-shrink:0;">
+      <button onclick="retryFromStart()" class="btn btn-secondary btn-sm">↩ Retry from start</button>
+      <button id="ai-retry-here-btn" onclick="retryFromHere(currentInspectAgentId)" class="btn btn-primary btn-sm">↻ Retry from here</button>
+    </div>
+  </div>
+</div>
+
+<!-- Master inspect modal -->
+<div id="master-inspect-modal" class="inspect-modal hidden" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="inspect-panel">
+    <div style="padding:14px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+      <span style="font-weight:600; font-size:14px;">Master Plan</span>
+      <button onclick="document.getElementById('master-inspect-modal').classList.add('hidden')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text-muted);">✕</button>
+    </div>
+    <div style="overflow-y:auto; padding:14px 16px; flex:1;">
+      <div style="margin-bottom:14px;">
+        <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">User Query</div>
+        <div id="mi-user-query" style="font-size:13px; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border);"></div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Reasoning</div>
+        <pre id="mi-reasoning" style="font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--surface); padding:8px; border-radius:4px; border:1px solid var(--border);"></pre>
+      </div>
+      <div>
+        <div style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Planned Agents</div>
+        <div id="mi-agent-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/app.js"></script>
 <script>
   requireAuth();
@@ -125,6 +203,11 @@
   let currentQuery = '';
   let personas = [];
   let planStages = [];
+  let MAX_RETRIES = 3;
+  let agentDetails = {};
+  let masterDetails = {};
+  let currentInspectAgentId = null;
+  let lastPlanRunId = null;
   let prevCursor = null;
   let hasMoreMessages = false;
   let loadingMore = false;
@@ -226,14 +309,17 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }
 
-  async function sendMessage(queryOverride = null) {
+  async function sendMessage(queryOverride = null, retryFrom = null) {
     const query = queryOverride || document.getElementById('query-input').value.trim();
     if (!query || !wsId) return;
     currentQuery = query;
 
     if (!queryOverride) document.getElementById('query-input').value = '';
     document.getElementById('send-btn').disabled = true;
-    document.getElementById('plan-bar').classList.add('hidden'); document.getElementById('plan-flow').innerHTML = ''; planStages = [];
+    if (!retryFrom) {
+      document.getElementById('plan-bar').classList.add('hidden'); document.getElementById('plan-flow').innerHTML = ''; planStages = [];
+      agentDetails = {}; lastPlanRunId = null;
+    }
     document.getElementById('compacting-bar').classList.add('hidden');
 
     appendMessage('user', query);
@@ -249,13 +335,24 @@
         conversation_id: convId,
         query,
         persona_id,
+        retry_from: retryFrom || undefined,
       })) {
         if (event === 'plan') {
           planStages = data.stages || [];
+          MAX_RETRIES = data.max_retries || 3;
+          masterDetails = { user_query: data.user_query, reasoning: data.reasoning, stages: data.stages };
+          lastPlanRunId = data.plan_run_id || null;
           renderPlanBar(planStages);
         } else if (event === 'agent_progress') {
           if (data.type === 'agent_start') updatePlanNode(data.agent_id, 'active');
-          else if (data.type === 'agent_done') updatePlanNode(data.agent_id, data.success ? 'done' : 'error');
+          else if (data.type === 'agent_done') {
+            agentDetails[data.agent_id] = data;
+            updatePlanNode(data.agent_id, data.success ? 'done' : 'error');
+            if (currentInspectAgentId === data.agent_id &&
+                !document.getElementById('agent-inspect-modal').classList.contains('hidden')) {
+              openAgentInspect(data.agent_id);
+            }
+          }
         } else if (event === 'token') {
           fullText += data.text;
           contentEl.textContent = fullText;
@@ -286,6 +383,7 @@
           const item = document.querySelector(`[data-conv-id="${data.conversation_id}"]`);
           if (item) item.textContent = data.title;
         } else if (event === 'done') {
+          lastPlanRunId = data.plan_run_id || lastPlanRunId;
           updateSystemNode('Composer', 'done');
           if (fullText) contentEl.innerHTML = marked.parse(fullText);
           convId = data.conversation_id;
@@ -553,9 +651,14 @@
 
   function makePlanNode(name, type, extraClass, agentId, tools) {
     const el = document.createElement('div');
-    el.className = `plan-node plan-node-${type}`;
+    el.className = `plan-node plan-node-${type} node-clickable`;
     if (extraClass) el.dataset.systemNode = extraClass.replace('pn-', '');
-    if (agentId) el.dataset.agentId = agentId;
+    if (agentId) {
+      el.dataset.agentId = agentId;
+      el.onclick = () => openAgentInspect(agentId);
+    } else if (extraClass === 'pn-master') {
+      el.onclick = () => openMasterInspect();
+    }
     const nameEl = document.createElement('span');
     nameEl.textContent = name;
     el.appendChild(nameEl);
@@ -589,6 +692,19 @@
       s.className = 'plan-spinner';
       node.insertBefore(s, node.firstChild);
     }
+    if (state === 'error') _upsertRetryBadge(node, agentId);
+  }
+
+  function _upsertRetryBadge(node, agentId) {
+    let badge = node.querySelector('.retry-badge');
+    const detail = agentDetails[agentId];
+    const attempt = detail ? (detail.retry_attempt || 0) : 0;
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'retry-badge';
+      node.appendChild(badge);
+    }
+    badge.textContent = `${attempt + 1}/${MAX_RETRIES}`;
   }
 
   function updateSystemNode(name, state) {
@@ -771,6 +887,71 @@
   }
 
   function esc(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // ---- Inspect modals ----
+  function openMasterInspect() {
+    document.getElementById('mi-user-query').textContent = masterDetails.user_query || '';
+    document.getElementById('mi-reasoning').textContent = masterDetails.reasoning || '';
+    const agentList = document.getElementById('mi-agent-list');
+    agentList.innerHTML = '';
+    (masterDetails.stages || []).flat().forEach(agent => {
+      const item = document.createElement('div');
+      item.style.cssText = 'font-size:12px; padding:6px 0; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;';
+      const name = document.createElement('span');
+      name.style.fontWeight = '500';
+      name.textContent = agent.agent_name;
+      const tools = document.createElement('span');
+      tools.style.cssText = 'font-size:11px; color:var(--text-muted); font-family:monospace;';
+      tools.textContent = (agent.tools || []).join(', ') || '—';
+      item.appendChild(name); item.appendChild(tools);
+      agentList.appendChild(item);
+    });
+    document.getElementById('master-inspect-modal').classList.remove('hidden');
+  }
+
+  function openAgentInspect(agentId) {
+    currentInspectAgentId = agentId;
+    const detail = agentDetails[agentId] || {};
+    const isRunning = !detail.type && Object.keys(detail).length === 0;
+    document.getElementById('ai-agent-name').textContent = detail.agent_name || agentId;
+    const attempt = detail.retry_attempt || 0;
+    document.getElementById('ai-attempt').textContent = isRunning ? 'Running…' : `Attempt ${attempt + 1}/${MAX_RETRIES}`;
+    document.getElementById('ai-input-task').textContent = isRunning ? '⏳ Agent is running…' : (detail.input_task || '—');
+    document.getElementById('ai-input-tools').textContent = isRunning ? '—' : ((detail.input_tools || []).join(', ') || '—');
+    const deps = detail.dependency_outputs || {};
+    document.getElementById('ai-input-deps').textContent = isRunning ? '—' : (Object.keys(deps).length ? JSON.stringify(deps, null, 2) : '—');
+    document.getElementById('ai-output-data').textContent = isRunning ? '—' : (detail.output_data ? JSON.stringify(detail.output_data, null, 2) : '—');
+    document.getElementById('ai-output-error').textContent = isRunning ? '—' : (detail.error || 'No error');
+    const retrySection = document.getElementById('ai-retry-section');
+    const isFailed = detail.success === false;
+    retrySection.style.display = isFailed ? 'flex' : 'none';
+    if (isFailed) {
+      const atLimit = (attempt + 1) >= MAX_RETRIES;
+      const retryHereBtn = document.getElementById('ai-retry-here-btn');
+      retryHereBtn.disabled = atLimit;
+      retryHereBtn.title = atLimit ? `Max retries (${MAX_RETRIES}) reached` : '';
+    }
+    _switchInspectTab('input');
+    document.getElementById('agent-inspect-modal').classList.remove('hidden');
+  }
+
+  function _switchInspectTab(tab) {
+    document.getElementById('ai-tab-input').classList.toggle('active', tab === 'input');
+    document.getElementById('ai-tab-output').classList.toggle('active', tab === 'output');
+    document.getElementById('ai-panel-input').style.display = tab === 'input' ? '' : 'none';
+    document.getElementById('ai-panel-output').style.display = tab === 'output' ? '' : 'none';
+  }
+
+  function retryFromStart() {
+    document.getElementById('agent-inspect-modal').classList.add('hidden');
+    sendMessage(currentQuery);
+  }
+
+  function retryFromHere(agentId) {
+    if (!lastPlanRunId) { toast('No plan run available', 'error'); return; }
+    document.getElementById('agent-inspect-modal').classList.add('hidden');
+    sendMessage(currentQuery, { agent_id: agentId, plan_run_id: lastPlanRunId });
+  }
 
   document.getElementById('messages').addEventListener('scroll', () => {
     const el = document.getElementById('messages');

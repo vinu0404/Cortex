@@ -4,6 +4,27 @@ from app.common.exceptions import CircularDependencyError
 from core.schemas import ResolvedAgentTask
 
 
+def get_affected_tasks(
+    failed_ids: set[str],
+    all_tasks: list[ResolvedAgentTask],
+) -> list[ResolvedAgentTask]:
+    """BFS from failed nodes through the dependents graph — returns failed + all downstream tasks."""
+    task_map = {t.agent_id: t for t in all_tasks}
+    dependents: dict[str, set[str]] = defaultdict(set)
+    for task in all_tasks:
+        for dep in task.depends_on:
+            dependents[dep].add(task.agent_id)
+    affected = set(failed_ids)
+    queue: deque[str] = deque(failed_ids)
+    while queue:
+        aid = queue.popleft()
+        for child_id in dependents[aid]:
+            if child_id not in affected:
+                affected.add(child_id)
+                queue.append(child_id)
+    return [task_map[aid] for aid in affected if aid in task_map]
+
+
 def resolve_stages(tasks: list[ResolvedAgentTask]) -> list[list[ResolvedAgentTask]]:
     """
     Kahn's algorithm: returns tasks grouped into parallel execution stages.

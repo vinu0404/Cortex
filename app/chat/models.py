@@ -62,6 +62,7 @@ class ChatStreamRequest(BaseModel):
     conversation_id: UUID | None = None
     query: str
     persona_id: UUID | None = None
+    retry_from: dict | None = None  # {"agent_id": str, "plan_run_id": str}
 
 
 class HitlRespondRequest(BaseModel):

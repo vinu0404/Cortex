@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # --- HITL ---
     HITL_TIMEOUT_SECONDS: int = 120
 
+    # --- Orchestration ---
+    MAX_AGENT_RETRIES: int = 3
+
     # --- Token budget ---
     TOKEN_BUDGET_ENABLED: bool = True
     USER_DAILY_TOKEN_BUDGET: int = 100_000

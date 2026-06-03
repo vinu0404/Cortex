@@ -28,17 +28,25 @@ from app.chat.manager import ChatManager
 from app.common.exceptions import NotFoundError, PlanValidationError, TokenBudgetExceededError
 from app.common.redis_client import get_async_redis
 from app.common.token_budget import TokenBudgetService
+from app.plan_runs.db_models import PlanRunCreate, PlanRunModelService
 from config.settings import get_settings
 from core.composer_agent import compose_response
 from core.master_agent import generate_plan
 from core.memory_manager import MemoryManager, schedule_long_term_memory
-from core.orchestrator import OrchestrationContext, execute_plan
+from core.orchestrator import (
+    OrchestrationContext,
+    PlanCallbacks,
+    RetryInput,
+    execute_plan,
+    execute_plan_partial,
+)
 from core.schemas import AgentOutput, ExecutionPlan
 from core.title_generator import generate_title
 from database.session import get_custom_db_context_session
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_plan_run_svc = PlanRunModelService()
 
 _DB_RETRY_EXCEPTIONS = (OperationalError, InterfaceError)
 # Exceptions that indicate a key/token is permanently unreadable (not retriable)
@@ -74,6 +82,7 @@ async def chat_stream(
     is_embed: bool = False,
     embed_hitl_auto_approve: bool = True,
     timezone: str = "UTC",
+    retry_from: dict | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.monotonic()
 
@@ -129,36 +138,50 @@ async def chat_stream(
         if info.get("agent_type") == AgentTypeEnum.CUSTOM.value
     }
 
-    # --- Planning ---
-    yield sse_event({"phase": "planning", "agent_name": "Master"}, "status")
+    plan_run_id: UUID | None = None
+    prior_state: dict | None = None
 
-    try:
-        plan = await generate_plan(
-            query=query,
-            agents_db=planning_agents_db,
-            conversation_history=mem_mgr.get_window(),
-            long_term_memory=long_term_memory,
-            model_id=master_model,
-            api_key=master_key,
-            conversation_id=str(conversation_id),
-            is_embed=is_embed,
-            timezone=timezone,
-        )
-    except PlanValidationError as e:
-        yield sse_event({"message": str(e)}, "error")
-        return
+    if retry_from:
+        plan, plan_run_id, prior_state = await _load_retry_state(retry_from, conversation_id)
+        if plan is None:
+            yield sse_event({"message": "Max retries reached or plan not found"}, "error")
+            return
+    else:
+        # --- Planning ---
+        yield sse_event({"phase": "planning", "agent_name": "Master"}, "status")
+        try:
+            plan = await generate_plan(
+                query=query,
+                agents_db=planning_agents_db,
+                conversation_history=mem_mgr.get_window(),
+                long_term_memory=long_term_memory,
+                model_id=master_model,
+                api_key=master_key,
+                conversation_id=str(conversation_id),
+                is_embed=is_embed,
+                timezone=timezone,
+            )
+        except PlanValidationError as e:
+            yield sse_event({"message": str(e)}, "error")
+            return
+        if plan.clarification_questions:
+            questions_text = "I need a few clarifications before I can help:\n\n" + "\n".join(
+                f"{i + 1}. {q.question}" + (f"\n   Options: {', '.join(q.options)}" if q.options else "")
+                for i, q in enumerate(plan.clarification_questions)
+            )
+            async with get_custom_db_context_session() as db:
+                await ChatManager(db).add_message(conversation_id, MessageRoleEnum.assistant, questions_text)
+            yield sse_event({"questions": [q.model_dump() for q in plan.clarification_questions]}, "clarification_required")
+            return
+        plan_run_id = await _create_plan_run(plan, conversation_id, query)
 
-    if plan.clarification_questions:
-        questions_text = "I need a few clarifications before I can help:\n\n" + "\n".join(
-            f"{i + 1}. {q.question}" + (f"\n   Options: {', '.join(q.options)}" if q.options else "")
-            for i, q in enumerate(plan.clarification_questions)
-        )
-        async with get_custom_db_context_session() as db:
-            await ChatManager(db).add_message(conversation_id, MessageRoleEnum.assistant, questions_text)
-        yield sse_event({"questions": [q.model_dump() for q in plan.clarification_questions]}, "clarification_required")
-        return
-
-    yield sse_event({"stages": _build_plan_stages(plan), "reasoning": plan.reasoning}, "plan")
+    yield sse_event({
+        "stages": _build_plan_stages(plan),
+        "reasoning": plan.reasoning,
+        "plan_run_id": str(plan_run_id) if plan_run_id else None,
+        "user_query": query,
+        "max_retries": settings.MAX_AGENT_RETRIES,
+    }, "plan")
 
     if await request.is_disconnected():
         return
@@ -192,17 +215,34 @@ async def chat_stream(
     def on_agent_start(agent_id: str, agent_name: str) -> None:
         progress_queue.put_nowait({"type": "agent_start", "agent_id": agent_id, "agent_name": agent_name})
 
-    def on_agent_done_cb(output: AgentOutput) -> None:
+    async def on_agent_done_cb(output: AgentOutput) -> None:
+        if plan_run_id:
+            await _write_agent_run_record(output, plan_run_id, conversation_id)
         progress_queue.put_nowait({
             "type": "agent_done",
             "agent_id": output.agent_id,
             "agent_name": output.agent_name,
             "success": output.task_done,
+            "error": output.error,
+            "input_task": output.execution_metadata.get("input_task", ""),
+            "input_tools": output.execution_metadata.get("tools", []),
+            "dependency_outputs": output.execution_metadata.get("dependency_outputs", {}),
+            "output_data": output.data,
+            "retry_attempt": output.execution_metadata.get("retry_attempt", 0),
         })
 
-    execute_task = asyncio.create_task(
-        execute_plan(plan, ctx, on_hitl_needed, on_agent_done=on_agent_done_cb, on_agent_start=on_agent_start)
+    callbacks = PlanCallbacks(
+        on_hitl_needed=on_hitl_needed,
+        on_agent_done=on_agent_done_cb,
+        on_agent_start=on_agent_start,
     )
+    if retry_from and prior_state is not None:
+        execute_coro = execute_plan_partial(
+            plan, RetryInput(prior_state, retry_from["agent_id"]), ctx, callbacks
+        )
+    else:
+        execute_coro = execute_plan(plan, ctx, callbacks)
+    execute_task = asyncio.create_task(execute_coro)
 
     # HITL state: one DB record + one SSE event per agent_id, no flooding
     hitl_wait_tasks: dict[str, asyncio.Task] = {}
@@ -372,7 +412,12 @@ async def chat_stream(
         existing_ltm=long_term_memory.critical_facts,
     )
 
-    yield sse_event({"total_ms": elapsed_ms, "conversation_id": str(conversation_id), "message_id": str(message_id)}, "done")
+    yield sse_event({
+        "total_ms": elapsed_ms,
+        "conversation_id": str(conversation_id),
+        "message_id": str(message_id),
+        "plan_run_id": str(plan_run_id) if plan_run_id else None,
+    }, "done")
 
     # Title generation after done — awaited so we can push title to client without page reload
     if not recent_messages:
@@ -645,6 +690,61 @@ async def _load_mcp_context(user_id: UUID, db: AsyncSession) -> dict:
             "tools": {t["name"]: t for t in (s.discovered_tools or [])},
         }
     return result
+
+
+async def _create_plan_run(plan: ExecutionPlan, conversation_id: UUID, query: str) -> UUID:
+    async with get_custom_db_context_session() as db:
+        run = await _plan_run_svc.create_plan_run(db, PlanRunCreate(
+            conversation_id=conversation_id,
+            message_id=None,
+            user_query=query,
+            master_reasoning=plan.reasoning or "",
+            plan_dict=plan.model_dump(),
+        ))
+        return run.id
+
+
+async def _write_agent_run_record(output: AgentOutput, plan_run_id: UUID, conversation_id: UUID) -> None:
+    async with get_custom_db_context_session() as db:
+        await _plan_run_svc.create_agent_run_record(db, plan_run_id, output, conversation_id)
+
+
+async def _load_retry_state(retry_from: dict, conversation_id: UUID) -> tuple:
+    from app.plan_runs.db_models import PlanRun
+    plan_run_id = UUID(retry_from["plan_run_id"])
+    agent_id = retry_from["agent_id"]
+    async with get_custom_db_context_session() as db:
+        plan_run = await db.get(PlanRun, plan_run_id)
+        if not plan_run or plan_run.conversation_id != conversation_id:
+            return None, None, None
+        retry_count = await _plan_run_svc.count_agent_retries(db, plan_run_id, agent_id)
+        if retry_count >= settings.MAX_AGENT_RETRIES:
+            return None, None, None
+        prior_records = await _plan_run_svc.get_successful_agent_runs(db, plan_run_id)
+    plan = ExecutionPlan.model_validate(plan_run.plan)
+    prior_state = _records_to_shared_state(prior_records)
+    return plan, plan_run_id, prior_state
+
+
+def _records_to_shared_state(records: list) -> dict:
+    state: dict = {}
+    for rec in records:
+        state[rec.agent_id] = AgentOutput(
+            agent_id=rec.agent_id,
+            agent_name=rec.agent_name,
+            task_description=rec.input_task,
+            task_done=rec.task_done,
+            data=rec.output_data,
+            error=rec.output_error,
+            execution_metadata={"retry_attempt": rec.retry_attempt},
+            resource_usage={
+                "input_tokens": rec.tokens_input,
+                "output_tokens": rec.tokens_output,
+                "cost_usd": rec.cost_usd,
+                "time_taken_ms": rec.time_taken_ms,
+            },
+        )
+    return state
 
 
 # Public API for external consumers (Celery tasks, cron runner)

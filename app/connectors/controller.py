@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -10,7 +10,7 @@ from app.auth.db_models import User
 from app.common.api_response import fail, ok
 from app.common.exceptions import AppError
 from app.connectors.manager import ConnectorManager
-from app.connectors.models import ConnectorDefinitionResponse, ConnectorInstanceResponse, CredentialsConnectRequest
+from app.connectors.models import ConnectorDefinitionResponse, CredentialsConnectRequest
 from database.session import get_db
 
 router = APIRouter()

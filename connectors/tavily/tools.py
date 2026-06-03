@@ -5,6 +5,8 @@ import httpx
 from config.settings import get_settings
 from tools.registry import tool
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,8 @@ async def web_search(
                 "topic": topic,
             },
         )
+        if not resp.is_success:
+            logger.error("Tavily web_search %s — body: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
         data = resp.json()
     results = [

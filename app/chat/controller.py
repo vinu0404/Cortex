@@ -186,6 +186,7 @@ async def stream_chat(
         user_id=current_user.id,
         persona_id=body.persona_id,
         timezone=request.headers.get("X-Timezone", "UTC"),
+        retry_from=body.retry_from,
     )
 
     return StreamingResponse(
