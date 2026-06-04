@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Cron Jobs</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-4">
   <style>
     .cron-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; transition:border-color .18s, box-shadow .18s; }
     .cron-card:hover { border-color:var(--border-dark); box-shadow:var(--shadow-md); }
@@ -20,7 +20,7 @@
     .spinner-sm { width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; display:inline-block; }
   </style>
 </head>
-<body>
+<body data-page-graphic="cron">
 
 <nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
   <div style="display:flex; align-items:center; gap:12px;">
@@ -139,7 +139,7 @@
 
 <div id="toast-container"></div>
 
-<script src="/static/js/app.js?v=api-v1-ui-3"></script>
+<script src="/static/js/app.js?v=api-v1-ui-4"></script>
 <script>
   requireAuth();
 
@@ -155,7 +155,11 @@
 
   async function loadJobs() {
     const el = document.getElementById('jobs-list');
-    el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:120px;color:var(--text-muted);"><div class="spinner"></div></div>';
+    el.innerHTML = `
+      <div class="skeleton-list">
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>`;
     try {
       const jobs = await apiGet('cron-jobs');
       renderJobs(jobs || []);
@@ -167,7 +171,14 @@
   function renderJobs(jobs) {
     const el = document.getElementById('jobs-list');
     if (!jobs.length) {
-      el.innerHTML = '<div style="color:var(--text-muted); font-size:14px; padding:40px 0; text-align:center;">No cron jobs yet. Create one to get started.</div>';
+      el.innerHTML = `
+        <div class="empty-state" style="min-height:240px;">
+          <div>
+            <div class="empty-graphic"></div>
+            <h3>No cron jobs yet</h3>
+            <p>Turn repeated work into scheduled pipelines and let Cortex keep them moving on time.</p>
+          </div>
+        </div>`;
       return;
     }
     el.innerHTML = jobs.map(j => `

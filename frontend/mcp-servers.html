@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — MCP Servers</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-4">
   <style>
     .mcp-card { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; transition:border-color .18s, box-shadow .18s; }
     .mcp-card:hover { border-color:var(--border-dark); box-shadow:var(--shadow-md); }
@@ -25,7 +25,7 @@
     .env-row .btn-icon { padding:5px 9px; font-size:14px; line-height:1; }
   </style>
 </head>
-<body>
+<body data-page-graphic="mcp">
 
 <nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
   <div style="display:flex; align-items:center; gap:12px;">
@@ -169,7 +169,7 @@
   </div>
 </div>
 
-<script src="/static/js/app.js?v=api-v1-ui-3"></script>
+<script src="/static/js/app.js?v=api-v1-ui-4"></script>
 <script>
   let servers = [];
   let editingId = null;
@@ -187,6 +187,11 @@
   }
 
   async function loadServers() {
+    document.getElementById('servers-list').innerHTML = `
+      <div class="skeleton-list">
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>`;
     servers = await apiGet('mcp-servers').catch(() => []);
     renderServers();
   }
@@ -194,10 +199,12 @@
   function renderServers() {
     const el = document.getElementById('servers-list');
     if (!servers.length) {
-      el.innerHTML = `<div style="text-align:center; padding:60px 0; color:var(--text-muted);">
-        <div style="font-size:32px; margin-bottom:12px;">🔌</div>
-        <div style="font-size:15px; font-weight:500;">No MCP servers connected</div>
-        <div style="font-size:13px; margin-top:4px;">Add a server to use its tools in your agents</div>
+      el.innerHTML = `<div class="empty-state" style="min-height:260px;">
+        <div>
+          <div class="empty-graphic"></div>
+          <h3>No MCP servers connected</h3>
+          <p>Add a server to pull external tool meshes directly into your agent workflows.</p>
+        </div>
       </div>`;
       return;
     }

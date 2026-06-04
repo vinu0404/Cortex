@@ -7,7 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-4">
   <style>
     /* Vinu sidebar */
     .vinu-msg { display:flex; gap:10px; }
@@ -34,7 +34,7 @@
     #vinu-resize-handle:hover::after, #vinu-resize-handle.dragging::after { opacity:.5; }
   </style>
 </head>
-<body>
+<body data-page-graphic="home">
 
 <!-- Nav -->
 <nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
@@ -159,7 +159,7 @@
 
 </div>
 
-<script src="/static/js/app.js?v=api-v1-ui-3"></script>
+<script src="/static/js/app.js?v=api-v1-ui-4"></script>
 <script src="/static/js/vinu.js"></script>
 <script>
   if (window.marked) marked.setOptions({ breaks: true, gfm: true });
@@ -214,6 +214,9 @@
           ${ws.workspace_type === 'cron' ? '<span class="badge" style="font-size:10px; background:var(--surface-2); margin-top:4px;">Cron</span>' : ''}
         </div>
         <span class="badge">${new Date(ws.created_at).toLocaleDateString()}</span>
+      </div>
+      <div class="workspace-sparkline" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
       </div>
       ${ws.description ? `<p style="color:var(--text-muted); font-size:13px; margin-bottom:16px; line-height:1.5;">${esc(ws.description)}</p>` : '<div style="margin-bottom:16px;"></div>'}
       <div style="display:flex; gap:8px;">

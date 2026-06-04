@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cortex — Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/css/app.css?v=ui-3">
+  <link rel="stylesheet" href="/static/css/app.css?v=ui-4">
   <style>
     .dashboard-shell { max-width: 1240px; margin: 0 auto; padding: 28px 24px 40px; display: flex; flex-direction: column; gap: 22px; }
     .dashboard-hero {
@@ -149,7 +149,7 @@
     }
   </style>
 </head>
-<body>
+<body data-page-graphic="dashboard">
 
 <nav style="padding:0 24px; height:52px; display:flex; align-items:center; justify-content:space-between;">
   <div style="display:flex; align-items:center; gap:12px;">
@@ -277,7 +277,7 @@
   </div>
 </div>
 
-<script src="/static/js/app.js?v=api-v1-ui-3"></script>
+<script src="/static/js/app.js?v=api-v1-ui-4"></script>
 <script>
   requireAuth();
   const VALID_ANALYTICS_WINDOWS = [7, 15, 30];
